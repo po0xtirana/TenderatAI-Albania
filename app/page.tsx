@@ -75,7 +75,10 @@ export default function Home() {
         const preparation = await fetch("/api/bulletins/upload-url", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileName: file.name, size: file.size, contentType: file.type }) });
         const target = await preparation.json().catch(() => null) as { uploadUrl?: string; path?: string; error?: string } | null;
         if (!preparation.ok || !target?.uploadUrl || !target.path) { failures.push(`${file.name}: ${target?.error ?? "ngarkimi nuk u përgatit"}`); continue; }
-        const uploaded = await fetch(target.uploadUrl, { method: "PUT", headers: { "content-type": "application/pdf", "x-upsert": "false" }, body: file });
+        const uploadBody = new FormData();
+        uploadBody.append("cacheControl", "3600");
+        uploadBody.append("", file);
+        const uploaded = await fetch(target.uploadUrl, { method: "PUT", headers: { "x-upsert": "false" }, body: uploadBody });
         if (!uploaded.ok) { failures.push(`${file.name}: PDF-ja nuk u ruajt në cloud`); continue; }
         const response = await fetch("/api/bulletins/complete-upload", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileName: file.name, path: target.path }) });
         if (response.ok) accepted += 1;
