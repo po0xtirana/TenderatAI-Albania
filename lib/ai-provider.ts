@@ -7,10 +7,15 @@ export function hasAiProvider(): boolean {
 }
 
 export function getAiModel(): string {
-  return process.env.OPENROUTER_API_KEY
-    ? process.env.OPENROUTER_MODEL || "deepseek/deepseek-v4-flash-0731"
-    : process.env.OPENAI_TENDER_MODEL || "gpt-5-mini";
+  if (!process.env.OPENROUTER_API_KEY) return process.env.OPENAI_TENDER_MODEL || "gpt-5-mini";
+  const configured = process.env.OPENROUTER_MODEL?.trim();
+  // This preview slug was used by the first deployment but is no longer a
+  // reliable text endpoint. Preserve existing installations by migrating it.
+  if (!configured || configured === "deepseek/deepseek-v4-flash-0731") return "deepseek/deepseek-chat-v3.1";
+  return configured;
 }
+
+export function isUsingOpenRouter(): boolean { return Boolean(process.env.OPENROUTER_API_KEY); }
 
 export function getAiClient(): OpenAI | null {
   if (cachedClient !== undefined) return cachedClient;
