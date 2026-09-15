@@ -6,6 +6,7 @@ const useCloud = process.env.DATA_BACKEND === "supabase";
 
 export const readSnapshot = (options: Parameters<typeof local.getSnapshot>[0] = {}) => useCloud ? cloud.cloudSnapshot(options) : Promise.resolve(local.getSnapshot(options));
 export const readTender = (id: string) => useCloud ? cloud.cloudTender(id) : Promise.resolve(local.getTender(id));
+export const enrichTenderInsightsData = (id: string) => useCloud ? cloud.cloudEnrichTenderInsights(id) : local.enrichTenderInsights(id);
 export const readTenderDeliveryPlan = (id: string) => useCloud ? cloud.cloudDeliveryPlan(id) : Promise.resolve(local.getTenderDeliveryPlan(id));
 export const updateTenderDelivery = (tenderId: string, allocationId: string, patch: Record<string, unknown>) => useCloud ? cloud.cloudUpdateDelivery(tenderId, allocationId, patch) : Promise.resolve(local.updateTenderDeliveryAllocation(tenderId, allocationId, patch));
 export const readCapabilities = () => useCloud ? cloud.cloudCapabilities() : Promise.resolve(local.getCapabilities());

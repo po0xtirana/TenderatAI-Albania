@@ -1,215 +1,121 @@
 import { emptyCapabilityModel } from "./capabilities";
 import { normalize } from "./normalize";
 import { searchTermsForCpvCodes } from "./cpv-catalog";
-import type { CapabilityRequirementMatch, CompanyCapabilityModel, CompanyCapabilityProfile, TenderMatch, TenderNotice } from "./types";
+import type { CapabilityRequirementMatch, CompanyCapabilityModel, CompanyCapabilityProfile, TenderEligibility, TenderMatch, TenderNotice } from "./types";
+
+/** Maximum contribution of each component. These weights add up to 100 and are
+ * intentionally deterministic: AI may describe a tender but cannot change them. */
+const MAX = { scope: 20, compliance: 15, experience: 15, people: 15, equipment: 10, financial: 10, geography: 5, schedule: 5, preference: 5 } as const;
 
 const WORK_TERMS: Record<string, string[]> = {
   ndërtim: ["ndertim", "punime ndertimi", "ndertimi"], rikonstruksion: ["rikonstruksion", "rehabilitim", "rikualifikim", "permiresim"],
   rrugë: ["rruge", "rrugor", "asfalt", "infrastrukture rrugore"], ujësjellës: ["ujesjelles", "ujesjellesi", "furnizim me uje"],
   kanalizime: ["kanalizim", "kanalizimeve", "ujera te ndotura", "impiant trajtimi"], hidroteknikë: ["hidroteknik", "vaditese", "hidrik"],
   shkolla: ["shkolle", "shkollave", "institucion arsimor"], shëndetësi: ["spital", "qender shendetesore", "shendetesor"],
-  energji: ["energji", "elektrik", "ndricim", "fotovoltaik"], mirëmbajtje: ["mirembajtje", "sherbim mirembajtje", "riparim"]
+  energji: ["energji", "elektrik", "ndricim", "fotovoltaik"], mirëmbajtje: ["mirembajtje", "sherbim mirembajtje", "riparim"],
+  fasadë: ["fasade", "veshje fasade", "panel fasade", "gure dekorativ", "suvatim"], çati: ["cati", "hidroizolim", "ulluq", "mbulim catie"]
 };
 
 const REGION_TERMS: Record<string, string[]> = {
-  tiranë: ["tirane", "tiranes"], durrës: ["durres", "durresit"], elbasan: ["elbasan", "elbasanit"],
-  vlorë: ["vlore", "vlores"], berat: ["berat", "beratit"], shkodër: ["shkoder", "shkodres"],
-  korçë: ["korce", "korces"], fier: ["fier", "fierit"], kukës: ["kukes", "kukesit"],
-  lezhë: ["lezhe", "lezhes"], dibër: ["diber", "dibres"], gjirokastër: ["gjirokaster", "gjirokastres"]
+  tiranë: ["tirane", "tiranes"], durrës: ["durres", "durresit"], elbasan: ["elbasan", "elbasanit"], vlorë: ["vlore", "vlores"],
+  berat: ["berat", "beratit"], shkodër: ["shkoder", "shkodres"], korçë: ["korce", "korces"], fier: ["fier", "fierit"],
+  kukës: ["kukes", "kukesit"], lezhë: ["lezhe", "lezhes"], dibër: ["diber", "dibres"], gjirokastër: ["gjirokaster", "gjirokastres"]
 };
 
-const EQUIPMENT_TERMS = ["eskavator", "kamion", "fadrome", "betoniere", "autobetoniere", "vinç", "vinc", "ngjeshese", "asfalt-shtruese"];
+const EQUIPMENT_TERMS = ["eskavator", "kamion", "fadrome", "betoniere", "autobetoniere", "vinç", "vinc", "ngjeshese", "asfalt-shtruese", "skeleri", "pompe betoni"];
 const STAFF_TERMS = ["drejtues teknik", "inxhinier ndertimi", "inxhinier hidroteknik", "inxhinier elektrik", "arkitekt", "topograf", "gjeolog", "specialist sigurie"];
+const DAY = 86_400_000;
 
-function sourceText(tender: TenderNotice): string {
-  return normalize([tender.contractObject, tender.contractingAuthority, tender.address, tender.procedureType, tender.cpvCodes.join(" "), tender.sourceText].filter(Boolean).join(" "));
-}
-
-const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+const clamp = (value: number, max = 100) => Math.max(0, Math.min(max, Math.round(value)));
+const textIncludes = (text: string, value: string) => Boolean(value) && text.includes(normalize(value));
 const matches = (left: string, right: string) => normalize(left).includes(normalize(right)) || normalize(right).includes(normalize(left));
+const onOrBeforeToday = (value: string | null | undefined) => !value || !Number.isFinite(Date.parse(value)) || Date.parse(value) <= Date.now();
+const notExpired = (value: string | null | undefined) => !value || !Number.isFinite(Date.parse(value)) || Date.parse(value) >= Date.now();
 
-function projectTerms(tender: TenderNotice): string[] {
-  const text = sourceText(tender);
-  return Object.entries(WORK_TERMS).filter(([, terms]) => terms.some((term) => text.includes(normalize(term)))).map(([key]) => key);
+function sourceText(tender: TenderNotice): string { return normalize([tender.contractObject, tender.contractingAuthority, tender.address, tender.procedureType, tender.cpvCodes.join(" "), tender.sourceText].filter(Boolean).join(" ")); }
+function projectTerms(tender: TenderNotice): string[] { const text = sourceText(tender); return Object.entries(WORK_TERMS).filter(([, terms]) => terms.some((term) => text.includes(normalize(term)))).map(([key]) => key); }
+function parseRequiredLicences(tender: TenderNotice): string[] { const direct = normalize(tender.sourceText).match(/\b(?:np|ns)-?\s?\d{1,2}(?:-[a-z0-9]+)?\b/g) ?? []; return [...new Set(direct.map((value) => value.toUpperCase().replace(/\s/g, "")))].slice(0, 10); }
+function explicitRequirements(text: string, terms: string[]): string[] { return /kerkohet|duhet te kete|kapaciteti teknik|kriteret e vecanta|stafi teknik|mjetet dhe pajisjet|operatori ekonomik/.test(text) ? terms.filter((term) => text.includes(normalize(term))) : []; }
+function evidenceConfidence(tender: TenderNotice, requirementText: string): number { return textIncludes(normalize(tender.sourceText), requirementText) ? Math.min(0.94, tender.extractionConfidence) : Math.min(0.65, tender.extractionConfidence); }
+function requirement(type: string, tenderRequirement: string, companyCapability: string | null, result: CapabilityRequirementMatch["result"], tender: TenderNotice, explanation: string): CapabilityRequirementMatch { const confidence = evidenceConfidence(tender, tenderRequirement); return { requirementType: type, tenderRequirement, companyCapability, result, tenderEvidence: [{ page: tender.sourcePages.start, text: tenderRequirement, confidence }], companyEvidence: companyCapability ? [companyCapability] : [], confidence, explanation }; }
+function partnerTerms(partner: CompanyCapabilityModel["partners"][number]): string[] { return [...partner.categories, ...(partner.workTypes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => [capability.name, capability.category, ...capability.tasks])].filter(Boolean); }
+function partnerCovers(partner: CompanyCapabilityModel["partners"][number], tender: TenderNotice, term?: string): boolean {
+  if (!partner.active || partner.approvalStatus !== "approved") return false;
+  const codes = [...(partner.cpvCodes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => capability.cpvCodes)];
+  const cpvMatch = codes.some((code) => tender.cpvCodes.some((tenderCode) => tenderCode.startsWith(code) || code.startsWith(tenderCode.slice(0, 4))));
+  const labels = partnerTerms(partner);
+  return term ? labels.some((item) => matches(item, term)) : cpvMatch || labels.some((item) => textIncludes(sourceText(tender), item));
 }
-
-function parseRequiredLicences(tender: TenderNotice): string[] {
-  const text = normalize(tender.sourceText);
-  const direct = text.match(/\b(?:np|ns)-?\s?\d{1,2}(?:-[a-z0-9]+)?\b/g) ?? [];
-  return [...new Set(direct.map((value) => value.toUpperCase().replace(/\s/g, "")))].slice(0, 8);
+function parseGuaranteePercent(tender: TenderNotice, kind: "bid" | "performance"): number | null {
+  // `normalize` intentionally removes punctuation, including %, so preserve the
+  // raw text for numeric extraction while normalising only diacritics/case.
+  const text = (tender.sourceText ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/ë/gi, "e").replace(/ç/gi, "c").toLowerCase();
+  const context = kind === "bid" ? "(garanci.{0,80}(?:ofert|kontrat))" : "(garanci.{0,100}(?:ekzekutim|kontrat))";
+  const hit = text.match(new RegExp(`${context}.{0,100}?(\\d{1,2}(?:[.,]\\d+)?)\\s*%`, "i"));
+  return hit ? Number(hit[2].replace(",", ".")) : null;
 }
-
-function explicitRequirements(text: string, terms: string[]): string[] {
-  const requirementContext = /kerkohet|duhet te kete|kapaciteti teknik|kriteret e vecanta|stafi teknik|mjetet dhe pajisjet/.test(text);
-  if (!requirementContext) return [];
-  return terms.filter((term) => text.includes(normalize(term)));
-}
-
-function requirement(type: string, tenderRequirement: string, companyCapability: string | null, result: CapabilityRequirementMatch["result"], tender: TenderNotice, explanation: string, confidence = 0.82): CapabilityRequirementMatch {
-  return {
-    requirementType: type, tenderRequirement, companyCapability, result,
-    tenderEvidence: [{ page: tender.sourcePages.start, text: tenderRequirement, confidence }],
-    companyEvidence: companyCapability ? [companyCapability] : [], confidence, explanation
-  };
+function workFit(tender: TenderNotice, model: CompanyCapabilityModel, profile: CompanyCapabilityProfile) {
+  const text = sourceText(tender); const work = model.workCapabilities.filter((item) => item.active);
+  const directCpv = work.filter((item) => item.cpvPrefixes.some((prefix) => tender.cpvCodes.some((code) => code.startsWith(prefix))));
+  const directTerms = work.filter((item) => [item.trade, ...item.projectTypes, ...item.buildingTypes, ...searchTermsForCpvCodes(item.cpvPrefixes)].some((term) => normalize(term).length >= 3 && textIncludes(text, term)));
+  const legacy = profile.trades.filter((trade) => (WORK_TERMS[trade] ?? [trade]).some((term) => textIncludes(text, term)));
+  const partners = model.partners.filter((partner) => partnerCovers(partner, tender));
+  return { direct: [...new Set([...directCpv, ...directTerms].map((item) => item.trade))], legacy, partners, scope: directCpv.length ? 20 : directTerms.length ? 17 : legacy.length ? 14 : partners.length ? 11 : 2 };
 }
 
 export function matchTender(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel?: CompanyCapabilityModel): TenderMatch {
-  const model = suppliedModel ?? emptyCapabilityModel(profile);
-  const text = sourceText(tender);
-  const tenderTerms = projectTerms(tender);
-  const activeWork = model.workCapabilities.filter((item) => item.active);
-  const configuredTerms = [...new Set([...profile.trades, ...activeWork.map((item) => item.trade)])];
-  const termHits = configuredTerms.filter((trade) => (WORK_TERMS[trade] ?? [trade]).some((term) => text.includes(normalize(term))));
-  const detailedTermHits = activeWork.filter((work) => {
-    const terms = [work.trade, ...work.projectTypes, ...work.buildingTypes, ...searchTermsForCpvCodes(work.cpvPrefixes)];
-    return terms.some((term) => normalize(term).length >= 3 && text.includes(normalize(term)));
-  });
-  const cpvHits = activeWork.filter((work) => work.cpvPrefixes.some((prefix) => tender.cpvCodes.some((code) => code.startsWith(prefix))));
-  const activePartners = model.partners.filter((partner) => partner.active && partner.approvalStatus === "approved");
-  const pendingPartners = model.partners.filter((partner) => partner.active && partner.approvalStatus !== "approved" && partner.approvalStatus !== "blocked");
-  const partnerScopeHits = activePartners.filter((partner) => {
-    const partnerTerms = [...(partner.categories ?? []), ...(partner.workTypes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => [capability.name, capability.category, ...capability.tasks])];
-    const partnerCodes = [...(partner.cpvCodes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => capability.cpvCodes)];
-    return partnerCodes.some((code) => tender.cpvCodes.some((tenderCode) => tenderCode.startsWith(code) || code.startsWith(tenderCode.slice(0, 4)))) || partnerTerms.some((term) => term && text.includes(normalize(term)));
-  });
-  const pendingPartnerScopeHits = pendingPartners.filter((partner) => {
-    const partnerTerms = [...(partner.categories ?? []), ...(partner.workTypes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => [capability.name, capability.category, ...capability.tasks])];
-    const partnerCodes = [...(partner.cpvCodes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => capability.cpvCodes)];
-    return partnerCodes.some((code) => tender.cpvCodes.some((tenderCode) => tenderCode.startsWith(code) || code.startsWith(tenderCode.slice(0, 4)))) || partnerTerms.some((term) => term && text.includes(normalize(term)));
-  });
-  const scope = termHits.length || detailedTermHits.length || cpvHits.length || partnerScopeHits.length ? 20 : 3;
+  const model = suppliedModel ?? emptyCapabilityModel(profile); const text = sourceText(tender); const tenderTerms = projectTerms(tender);
+  const requirementMatches: CapabilityRequirementMatch[] = []; const confirmedCapabilities: string[] = []; const capabilityGaps: string[] = []; const staleInformation: string[] = []; const blockers: string[] = []; const missingInformation: string[] = []; const confirmedMandatoryFailures: CapabilityRequirementMatch[] = [];
+  const scopeFit = workFit(tender, model, profile);
+  if (scopeFit.direct.length || scopeFit.legacy.length) confirmedCapabilities.push(`Fusha e punës: ${(scopeFit.direct.length ? scopeFit.direct : scopeFit.legacy).join(", ")}.`); else if (scopeFit.partners.length) confirmedCapabilities.push(`Fusha e punës mund të mbulohet nga partneri: ${scopeFit.partners.map((partner) => partner.name).join(", ")}.`); else capabilityGaps.push("Nuk u gjet përputhje e drejtpërdrejtë me fushat e deklaruara.");
 
-  const requirementMatches: CapabilityRequirementMatch[] = [];
-  const confirmedCapabilities: string[] = [];
-  const capabilityGaps: string[] = [];
-  const staleInformation: string[] = [];
-  const blockers: string[] = [];
-  const missingInformation: string[] = [];
-  if (tender.lifecycleStatus === "cancelled") blockers.push("Procedura është anuluar dhe nuk është mundësi aktive.");
-  if (tender.lifecycleStatus === "correction") blockers.push("Ky është njoftim korrigjimi; duhet lidhur me procedurën kryesore para vlerësimit.");
-  if (pendingPartnerScopeHits.length) missingInformation.push(`Partnerët ${pendingPartnerScopeHits.map((partner) => partner.name).join(", ")} mund të ndihmojnë, por duhet të aprovohen para se kapaciteti i tyre të numërohet.`);
+  const requiredLicences = parseRequiredLicences(tender); const validLicences = model.complianceRecords.filter((item) => item.active && item.recordType === "licence" && item.status === "valid" && notExpired(item.expiryDate));
+  const expiringCompliance = model.complianceRecords.filter((item) => item.active && item.expiryDate && Date.parse(item.expiryDate) - Date.now() <= 60 * DAY && Date.parse(item.expiryDate) >= Date.now());
+  for (const licence of requiredLicences) { const found = validLicences.find((item) => [item.name, item.category, item.subcategory, item.level].some((value) => value && matches(value, licence))); const item = requirement("licence", licence, found?.name ?? null, found ? "confirmed" : "missing", tender, found ? `${found.name} është e vlefshme në profilin aktiv.` : "Licenca nuk u gjet në profilin aktiv të kompanisë."); requirementMatches.push(item); if (!found && item.confidence >= 0.8) confirmedMandatoryFailures.push(item); }
+  const compliance = requiredLicences.length ? (confirmedMandatoryFailures.length ? 0 : requirementMatches.filter((item) => item.requirementType === "licence" && item.result === "confirmed").length === requiredLicences.length ? MAX.compliance : 6) : validLicences.length ? 10 : 3;
+  if (requiredLicences.length && !confirmedMandatoryFailures.length) confirmedCapabilities.push(`Licencat e identifikuara u kontrolluan: ${requiredLicences.join(", ")}.`); if (!requiredLicences.length) missingInformation.push("Buletini nuk publikon licencat e hollësishme; statusi ligjor mbetet për verifikim."); if (expiringCompliance.length) staleInformation.push(`${expiringCompliance.map((item) => item.name).join(", ")} skadon brenda 60 ditësh.`);
 
-  if (termHits.length || detailedTermHits.length || cpvHits.length || partnerScopeHits.length) confirmedCapabilities.push(`Fusha e punës: ${termHits.join(", ") || detailedTermHits.map((item) => item.trade).join(", ") || cpvHits.map((item) => item.trade).join(", ") || "mbulim nga partnerët"}`);
-  else capabilityGaps.push("Nuk u gjet përputhje e fortë me fushat e deklaruara.");
+  const completed = model.referenceProjects.filter((item) => item.active && item.status === "completed"); const similarProjects = completed.filter((project) => project.cpvCodes.some((prefix) => tender.cpvCodes.some((code) => code.startsWith(prefix) || prefix.startsWith(code.slice(0, 4)))) || project.workTypes.some((type) => tenderTerms.some((term) => matches(type, term))));
+  const experience = similarProjects.length >= 3 ? MAX.experience : similarProjects.length === 2 ? 13 : similarProjects.length === 1 ? 10 : completed.length ? 4 : 1;
+  if (similarProjects.length) confirmedCapabilities.push(`${similarProjects.length} projekt${similarProjects.length === 1 ? "" : "e"} reference me ngjashmëri CPV/fushe.`); else missingInformation.push("Nuk është lidhur ende një projekt reference i krahasueshëm me këtë tender.");
 
-  const requiredLicences = parseRequiredLicences(tender);
-  const validLicences = model.complianceRecords.filter((item) => item.active && item.recordType === "licence" && item.status === "valid" && (!item.expiryDate || Date.parse(item.expiryDate) >= Date.now()));
-  const missingLicences = requiredLicences.filter((required) => !validLicences.some((item) => [item.name, item.category, item.subcategory].some((value) => value && matches(value, required))));
-  for (const licence of requiredLicences) {
-    const found = validLicences.find((item) => [item.name, item.category, item.subcategory].some((value) => value && matches(value, licence)));
-    requirementMatches.push(requirement("licence", licence, found?.name ?? null, found ? "confirmed" : "missing", tender, found ? "Licenca u gjet në profilin aktiv të kompanisë." : "Licenca nuk u gjet në profilin aktiv."));
-  }
-  const compliance = requiredLicences.length ? (missingLicences.length ? 0 : 15) : validLicences.length ? 9 : 3;
-  if (requiredLicences.length && !missingLicences.length) confirmedCapabilities.push(`Licencat e kërkuara: ${requiredLicences.join(", ")}`);
-  if (missingLicences.length) {
-    const message = `Mungojnë licencat: ${missingLicences.join(", ")}`;
-    capabilityGaps.push(message);
-    if (tender.extractionConfidence >= 0.8) blockers.push(message);
-  }
-  if (!requiredLicences.length) missingInformation.push("Licencat e detajuara duhet verifikuar në dokumentet e tenderit.");
+  const requiredStaff = explicitRequirements(text, STAFF_TERMS); const availablePeople = model.keyPeople.filter((person) => person.active && person.availabilityPercent > 0 && onOrBeforeToday(person.availableFrom)); const availableLabour = model.labourPools.filter((pool) => pool.active && pool.availableHeadcount > 0 && onOrBeforeToday(pool.availableFrom)); const availableCrews = model.crews.filter((crew) => crew.active && crew.availableCrewCount > 0 && onOrBeforeToday(crew.availableFrom));
+  const staffMatches = requiredStaff.map((role) => { const person = availablePeople.find((candidate) => [candidate.role, candidate.discipline, ...candidate.skills].some((value) => matches(value, role))); const crew = !person ? availableCrews.find((candidate) => [candidate.workCategory, ...candidate.roles.map((entry) => `${entry.role} ${entry.skill}`)].some((value) => matches(value, role))) : undefined; const partner = !person && !crew ? model.partners.find((candidate) => partnerCovers(candidate, tender, role)) : undefined; const item = requirement("personnel", role, person?.fullName ?? crew?.name ?? partner?.name ?? null, person || crew || partner ? "confirmed" : "missing", tender, person ? `${person.fullName} është i/e disponueshëm/me.` : crew ? `Ekipi ${crew.name} ka rolin e nevojshëm.` : partner ? `${partner.name} është partner i aprovuar për këtë rol.` : "Nuk u gjet person, ekip ose partner i disponueshëm."); requirementMatches.push(item); if (item.result === "missing" && item.confidence >= 0.8) confirmedMandatoryFailures.push(item); return item; });
+  const people = requiredStaff.length ? staffMatches.every((item) => item.result === "confirmed") ? MAX.people : staffMatches.some((item) => item.result === "confirmed") ? 8 : 1 : availablePeople.length && availableLabour.length && availableCrews.length ? 12 : availablePeople.length || availableLabour.length || availableCrews.length ? 7 : 2;
+  if (requiredStaff.length && staffMatches.some((item) => item.result === "missing")) capabilityGaps.push(`Personel/ekipe të pakonfirmuara: ${staffMatches.filter((item) => item.result === "missing").map((item) => item.tenderRequirement).join(", ")}.`); else if (availablePeople.length || availableLabour.length || availableCrews.length) confirmedCapabilities.push(`${availablePeople.length} profesionistë, ${availableLabour.reduce((sum, item) => sum + item.availableHeadcount, 0)} punonjës dhe ${availableCrews.reduce((sum, item) => sum + item.availableCrewCount, 0)} ekipe të lira.`); if (!requiredStaff.length) missingInformation.push("Kërkesat e stafit nuk publikohen plotësisht në buletin; kapaciteti i njerëzve është vlerësim paraprak.");
 
-  const completedProjects = model.referenceProjects.filter((item) => item.active && item.status === "completed");
-  const similarProjects = completedProjects.filter((project) => project.cpvCodes.some((prefix) => tender.cpvCodes.some((code) => code.startsWith(prefix) || prefix.startsWith(code.slice(0, 4)))) || project.workTypes.some((type) => tenderTerms.some((term) => matches(type, term))));
-  const experience = similarProjects.length >= 2 ? 15 : similarProjects.length === 1 ? 12 : completedProjects.length ? 5 : 2;
-  if (similarProjects.length) confirmedCapabilities.push(`${similarProjects.length} projekt${similarProjects.length === 1 ? "" : "e"} reference të ngjashme.`);
-  else missingInformation.push("Nuk u gjet eksperiencë reference e krahasueshme sipas CPV/fushës.");
+  const requiredEquipment = explicitRequirements(text, EQUIPMENT_TERMS); const equipmentAvailable = model.equipment.filter((item) => item.active && item.availableQuantity > 0 && item.condition !== "unavailable" && onOrBeforeToday(item.availableFrom) && notExpired(item.inspectionExpiry));
+  const equipmentMatches = requiredEquipment.map((name) => { const resource = equipmentAvailable.find((item) => matches(item.name, name) || matches(item.category, name)); const partner = !resource ? model.partners.find((candidate) => partnerCovers(candidate, tender, name) || (candidate.resources ?? []).some((item) => item.active && item.availableQuantity > 0 && onOrBeforeToday(item.availableFrom) && notExpired(item.inspectionExpiry) && (matches(item.name, name) || matches(item.category, name)))) : undefined; const item = requirement("equipment", name, resource ? `${resource.name} (${resource.availableQuantity} të lira)` : partner?.name ?? null, resource || partner ? "confirmed" : "missing", tender, resource ? "Pajisja është e disponueshme dhe kontrolli i saj nuk ka skaduar." : partner ? `${partner.name} mund ta sigurojë pajisjen si partner i aprovuar.` : "Pajisja e kërkuar nuk gjendet e disponueshme."); requirementMatches.push(item); if (item.result === "missing" && item.confidence >= 0.8) confirmedMandatoryFailures.push(item); return item; });
+  const equipment = requiredEquipment.length ? equipmentMatches.every((item) => item.result === "confirmed") ? MAX.equipment : equipmentMatches.some((item) => item.result === "confirmed") ? 5 : 1 : equipmentAvailable.length ? 7 : 2;
+  if (requiredEquipment.length && equipmentMatches.some((item) => item.result === "missing")) capabilityGaps.push(`Pajisje të pakonfirmuara: ${equipmentMatches.filter((item) => item.result === "missing").map((item) => item.tenderRequirement).join(", ")}.`); if (!requiredEquipment.length) missingInformation.push("Lista e makinerive kërkon verifikim në dokumentacionin e plotë të tenderit.");
 
-  const requiredStaff = explicitRequirements(text, STAFF_TERMS);
-  const availablePeople = model.keyPeople.filter((person) => person.active && person.availabilityPercent > 0);
-  const availableLabour = model.labourPools.filter((pool) => pool.active).reduce((sum, pool) => sum + pool.availableHeadcount, 0);
-  const partnerCovers = (term: string) => activePartners.some((partner) => [...(partner.categories ?? []), ...(partner.workTypes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => [capability.name, capability.category, ...capability.tasks])].some((value) => value && matches(value, term)));
-  const missingStaff = requiredStaff.filter((role) => !availablePeople.some((person) => matches(person.role, role) || matches(person.discipline, role) || person.skills.some((skill) => matches(skill, role))) && !partnerCovers(role));
-  for (const role of requiredStaff) {
-    const found = availablePeople.find((person) => matches(person.role, role) || matches(person.discipline, role) || person.skills.some((skill) => matches(skill, role)));
-    const partner = !found ? activePartners.find((candidate) => partnerCovers(role) && [...(candidate.categories ?? []), ...(candidate.capabilities ?? []).flatMap((capability) => [capability.name, ...capability.tasks])].some((value) => value && matches(value, role))) : null;
-    requirementMatches.push(requirement("personnel", role, found?.fullName ?? partner?.name ?? null, found || partner ? "confirmed" : "missing", tender, found ? `${found.fullName} mbulon këtë kërkesë.` : partner ? `${partner.name} mund ta mbulojë përmes nënkontraktimit.` : "Profili nuk ka një profesionist ose partner të disponueshëm për këtë kërkesë."));
-  }
-  const people = missingStaff.length ? 2 : requiredStaff.length ? 15 : availablePeople.length && availableLabour ? 10 : availableLabour ? 7 : 2;
-  if (missingStaff.length) capabilityGaps.push(`Personel teknik për verifikim: ${missingStaff.join(", ")}`);
-  else if (availablePeople.length || availableLabour) confirmedCapabilities.push(`${availablePeople.length} profesionistë kyç dhe ${availableLabour} punonjës të disponueshëm.`);
-  if (!requiredStaff.length) missingInformation.push("Kërkesat e hollësishme për stafin nuk janë në njoftimin përmbledhës.");
+  const value = tender.limitFundAll; const workMaximum = Math.max(0, ...model.workCapabilities.filter((item) => item.active).map((item) => item.maxProjectValueAll ?? 0)); const maximum = model.financialCapacity.maxContractValueAll ?? (workMaximum || profile.maxValueAll); const backlog = model.financialCapacity.currentBacklogAll ?? 0; const concurrentLimit = model.financialCapacity.maxConcurrentCommitmentAll; const capacityRemaining = concurrentLimit == null ? null : Math.max(0, concurrentLimit - backlog); const valueInRange = value == null || ((maximum == null || value <= maximum) && (capacityRemaining == null || value <= capacityRemaining));
+  const bidGuaranteePercent = parseGuaranteePercent(tender, "bid"); const performanceGuaranteePercent = parseGuaranteePercent(tender, "performance"); const guaranteeChecks = [["garanci oferte", bidGuaranteePercent, model.financialCapacity.bidSecurityLimitAll], ["garanci ekzekutimi", performanceGuaranteePercent, model.financialCapacity.performanceGuaranteeLimitAll]] as const;
+  let failedGuarantee = false; for (const [kind, percent, limit] of guaranteeChecks) { if (percent == null) continue; const enough = value == null || limit == null ? null : limit >= value * percent / 100; const item = requirement("financial", `${kind} ${percent}%`, limit == null ? null : `${limit.toLocaleString("sq-AL")} ALL`, enough === true ? "confirmed" : enough === false ? "missing" : "unknown", tender, enough === true ? "Limiti financiar i deklaruar e mbulon garancinë." : enough === false ? "Limiti financiar nuk e mbulon garancinë e identifikuar." : "Garancia u identifikua, por limiti përkatës nuk është deklaruar."); requirementMatches.push(item); if (enough === false) { failedGuarantee = true; if (item.confidence >= 0.8) confirmedMandatoryFailures.push(item); } }
+  const financial = value == null ? 4 : valueInRange && !failedGuarantee ? MAX.financial : valueInRange ? 5 : 0;
+  if (value == null) missingInformation.push("Fondi limit nuk u ekstraktua me siguri."); else if (valueInRange) confirmedCapabilities.push("Fondi limit është brenda kufijve financiarë dhe backlog-ut të deklaruar."); else capabilityGaps.push("Fondi limit tejkalon kapacitetin e kontratës ose angazhimin e lirë të deklaruar.");
 
-  const requiredEquipment = explicitRequirements(text, EQUIPMENT_TERMS);
-  const availableEquipment = model.equipment.filter((item) => item.active && item.availableQuantity > 0 && item.condition !== "unavailable");
-  const partnerEquipment = (name: string) => activePartners.find((partner) => (partner.resources ?? []).some((resource) => resource.active && resource.availableQuantity > 0 && (matches(resource.name, name) || matches(resource.category, name))) || partner.categories.some((category) => matches(category, name)));
-  const missingEquipment = requiredEquipment.filter((name) => !availableEquipment.some((item) => matches(item.name, name) || matches(item.category, name)) && !partnerEquipment(name));
-  for (const name of requiredEquipment) {
-    const found = availableEquipment.find((item) => matches(item.name, name) || matches(item.category, name));
-    const partner = !found ? partnerEquipment(name) : null;
-    requirementMatches.push(requirement("equipment", name, found ? `${found.name} (${found.availableQuantity} të lira)` : partner?.name ?? null, found || partner ? "confirmed" : "missing", tender, found ? "Pajisja është e regjistruar dhe e disponueshme." : partner ? `${partner.name} mund ta sigurojë pajisjen me qira ose si kapacitet partneri.` : "Pajisja nuk është e disponueshme në profil."));
-  }
-  const equipment = missingEquipment.length ? 1 : requiredEquipment.length ? 10 : availableEquipment.length ? 7 : 2;
-  if (missingEquipment.length) capabilityGaps.push(`Pajisje për verifikim: ${missingEquipment.join(", ")}`);
-  else if (availableEquipment.length) confirmedCapabilities.push(`${availableEquipment.length} lloje pajisjesh/automjetesh të disponueshme.`);
-  if (!requiredEquipment.length) missingInformation.push("Lista e detajuar e makinerive duhet verifikuar në dokumentet e tenderit.");
+  const serviceAreas = model.serviceAreas.filter((item) => item.active); const regionHit = serviceAreas.find((area) => (REGION_TERMS[area.region] ?? [area.region]).some((region) => textIncludes(text, region)) || area.municipalities.some((municipality) => textIncludes(text, municipality))); const locationKnown = Boolean(tender.address) || Object.values(REGION_TERMS).some((terms) => terms.some((term) => textIncludes(text, term))); const geography = regionHit ? MAX.geography : !locationKnown ? 3 : serviceAreas.length ? 1 : 2;
+  if (regionHit) confirmedCapabilities.push(`Zona e shërbimit konfirmohet: ${regionHit.region}${regionHit.mobilizationDays != null ? ` · mobilizim ${regionHit.mobilizationDays} ditë` : ""}.`); else missingInformation.push(locationKnown ? "Lokacioni është jashtë zonës së deklaruar ose kërkon verifikim mobilizimi." : "Lokacioni nuk është publikuar qartë në buletin.");
 
-  const value = tender.limitFundAll;
-  const profileMin = Math.min(...activeWork.map((item) => item.minProjectValueAll ?? Number.POSITIVE_INFINITY));
-  const minimum = Number.isFinite(profileMin) ? profileMin : profile.minValueAll;
-  const maximum = model.financialCapacity.maxContractValueAll ?? profile.maxValueAll;
-  const valueInRange = value == null || ((minimum == null || value >= minimum) && (maximum == null || value <= maximum));
-  const financial = value == null ? 4 : valueInRange && maximum != null ? 10 : valueInRange ? 6 : 0;
-  if (value == null) missingInformation.push("Fondi limit nuk u gjet qartë.");
-  else if (valueInRange) confirmedCapabilities.push("Fondi limit është brenda kapacitetit të kontratës.");
-  else {
-    const message = "Fondi limit është jashtë kapacitetit financiar të deklaruar.";
-    blockers.push(message); capabilityGaps.push(message);
-  }
+  const deadlineMs = tender.submissionDeadline ? Date.parse(tender.submissionDeadline) - Date.now() : null; const leadDays = deadlineMs == null ? null : Math.ceil(deadlineMs / DAY); const activeCommitments = model.commitments.filter((item) => item.active && (!item.endDate || Date.parse(item.endDate) >= Date.now())); const maxConcurrent = model.bidPreferences.maxConcurrentProjects; const occupiedCrewCount = activeCommitments.reduce((sum, item) => sum + item.committedCrews, 0); const totalCrewCapacity = model.crews.filter((item) => item.active).reduce((sum, item) => sum + item.availableCrewCount, 0) + occupiedCrewCount; const crewsFull = totalCrewCapacity > 0 && occupiedCrewCount >= totalCrewCapacity; const projectsFull = maxConcurrent != null && activeCommitments.length >= maxConcurrent; const minLead = model.bidPreferences.minimumLeadDays ?? 0; const schedule = deadlineMs == null ? 3 : deadlineMs <= 0 ? 0 : leadDays! < minLead ? 1 : crewsFull || projectsFull ? 2 : MAX.schedule;
+  if (deadlineMs != null && deadlineMs <= 0) blockers.push("Afati i dorëzimit ka kaluar."); else if (leadDays != null && leadDays < minLead) capabilityGaps.push(`Mbeten ${leadDays} ditë; rregulli i kompanisë kërkon ${minLead} ditë.`); if (crewsFull || projectsFull) capabilityGaps.push("Kapaciteti i ekipeve ose projekteve të njëkohshme është i zënë.");
 
-  const serviceAreas = model.serviceAreas.filter((item) => item.active);
-  const regionHit = serviceAreas.find((area) => (REGION_TERMS[area.region] ?? [area.region]).some((region) => text.includes(normalize(region))) || area.municipalities.some((municipality) => text.includes(normalize(municipality))));
-  const geography = serviceAreas.length === 0 ? 2 : regionHit ? 5 : 2;
-  if (regionHit) confirmedCapabilities.push(`Zona e shërbimit: ${regionHit.region}.`);
-  else missingInformation.push("Lokacioni ose mobilizimi kërkon verifikim.");
+  const excluded = [...profile.excludedTerms, ...model.workCapabilities.flatMap((item) => item.excludedWork), ...model.bidPreferences.excludedProjectTypes].find((term) => term.trim() && textIncludes(text, term)); const excludedAuthority = model.bidPreferences.excludedAuthorities.find((authority) => textIncludes(text, authority)); const preferredAuthority = model.bidPreferences.preferredAuthorities.find((authority) => textIncludes(text, authority)); const preference = excluded || excludedAuthority ? 0 : preferredAuthority ? MAX.preference : 3;
+  if (excluded) blockers.push(`Punë e përjashtuar nga kompania: ${excluded}.`); if (excludedAuthority) blockers.push(`Autoritet i përjashtuar nga kompania: ${excludedAuthority}.`); if (preferredAuthority) confirmedCapabilities.push(`Autoritet i preferuar: ${preferredAuthority}.`);
 
-  const deadlineMs = tender.submissionDeadline ? Date.parse(tender.submissionDeadline) - Date.now() : null;
-  const leadDays = deadlineMs == null ? null : Math.ceil(deadlineMs / 86_400_000);
-  const minLead = model.bidPreferences.minimumLeadDays ?? 0;
-  const activeCommitments = model.commitments.filter((item) => item.active && (!item.endDate || Date.parse(item.endDate) >= Date.now()));
-  const maxConcurrent = model.bidPreferences.maxConcurrentProjects;
-  const capacityFull = maxConcurrent != null && activeCommitments.length >= maxConcurrent;
-  const schedule = deadlineMs == null ? 2 : deadlineMs <= 0 ? 0 : (leadDays ?? 0) < minLead ? 1 : capacityFull ? 2 : 5;
-  if (deadlineMs != null && deadlineMs <= 0) blockers.push("Afati i dorëzimit ka kaluar.");
-  else if (leadDays != null && leadDays < minLead) capabilityGaps.push(`Mbeten ${leadDays} ditë; rregulli i kompanisë kërkon ${minLead}.`);
-  if (capacityFull) capabilityGaps.push("Angazhimet aktive kanë arritur kufirin e projekteve të njëkohshme.");
-
-  const excluded = [...profile.excludedTerms, ...model.bidPreferences.excludedProjectTypes].find((term) => term.trim() && text.includes(normalize(term)));
-  const excludedAuthority = model.bidPreferences.excludedAuthorities.find((authority) => text.includes(normalize(authority)));
-  const preferredAuthority = model.bidPreferences.preferredAuthorities.find((authority) => text.includes(normalize(authority)));
-  const preference = excluded || excludedAuthority ? 0 : preferredAuthority ? 5 : 2;
-  if (excluded) blockers.push(`Punë e përjashtuar: ${excluded}`);
-  if (excludedAuthority) blockers.push(`Autoritet i përjashtuar: ${excludedAuthority}`);
-  if (preferredAuthority) confirmedCapabilities.push(`Autoritet i preferuar: ${preferredAuthority}.`);
-
-  const lastPeopleUpdate = Math.min(...model.labourPools.filter((item) => item.active).map((item) => Date.parse(item.updatedAt)));
-  const lastEquipmentUpdate = Math.min(...model.equipment.filter((item) => item.active).map((item) => Date.parse(item.updatedAt)));
-  if (Number.isFinite(lastPeopleUpdate) && Date.now() - lastPeopleUpdate > 30 * 86_400_000) staleInformation.push("Disponueshmëria e personelit është më e vjetër se 30 ditë.");
-  if (Number.isFinite(lastEquipmentUpdate) && Date.now() - lastEquipmentUpdate > 30 * 86_400_000) staleInformation.push("Disponueshmëria e pajisjeve është më e vjetër se 30 ditë.");
-
-  const components = { scope, compliance, experience, people, equipment, financial, geography, schedule, preference };
-  let score = clamp(Object.values(components).reduce((sum, component) => sum + component, 0));
-  const hardBlocked = blockers.some((blocker) => blocker.includes("përjashtuar") || blocker.includes("ka kaluar") || blocker.includes("kapacitetit financiar") || blocker.includes("Mungojnë licencat") || blocker.includes("është anuluar") || blocker.includes("njoftim korrigjimi"));
-  if (hardBlocked) score = 0;
-  const detailedCriteriaMentioned = /kriteret e vecanta|kapaciteti teknik|duhet te kete/.test(text);
-  let decision: TenderMatch["decision"] = hardBlocked ? "blocked" : score >= 80 ? "high_fit" : score >= 65 ? "good_fit" : score >= 45 ? "review" : "low_fit";
-  if (detailedCriteriaMentioned && !requiredLicences.length && !requiredStaff.length && !requiredEquipment.length && !hardBlocked) decision = "review";
-
-  const reasons = [
-    termHits.length || detailedTermHits.length || cpvHits.length ? `Përputhet me ${termHits.join(", ") || detailedTermHits.map((item) => item.trade).join(", ") || "kodet CPV"}.` : partnerScopeHits.length ? `Mbulimi konfirmohet nga partnerët: ${partnerScopeHits.map((partner) => partner.name).join(", ")}.` : "Nuk u gjet përputhje e fortë me specializimet.",
-    similarProjects.length ? `Ka ${similarProjects.length} eksperienca të ngjashme të regjistruara.` : "Eksperienca e ngjashme duhet verifikuar.",
-    regionHit ? `Kompania operon në ${regionHit.region}.` : "Gjeografia dhe mobilizimi kërkojnë verifikim.",
-    value == null ? "Fondi limit nuk është i qartë." : valueInRange ? "Vlera është brenda kapacitetit financiar." : "Vlera është jashtë kapacitetit financiar.",
-    requiredLicences.length || requiredStaff.length || requiredEquipment.length ? "Kërkesat e identifikuara u krahasuan me profilin aktiv." : "Kriteret e detajuara të kualifikimit nuk janë në buletinin përmbledhës."
-  ];
-
-  return {
-    tenderId: tender.id, score, decision, components, blockers, reasons,
-    matchedTerms: tenderTerms.length ? tenderTerms : cpvHits.length ? ["përputhje sipas CPV"] : partnerScopeHits.map((partner) => `partner: ${partner.name}`),
-    missingInformation, confirmedCapabilities, capabilityGaps, staleInformation, requirementMatches,
-    capabilityVersion: model.activeVersion, updatedAt: new Date().toISOString()
-  };
+  if (model.labourPools.filter((item) => item.active).some((item) => Date.now() - Date.parse(item.updatedAt) > 30 * DAY)) staleInformation.push("Të paktën një disponueshmëri e personelit është më e vjetër se 30 ditë."); if (model.equipment.filter((item) => item.active).some((item) => Date.now() - Date.parse(item.updatedAt) > 30 * DAY)) staleInformation.push("Të paktën një disponueshmëri e pajisjeve është më e vjetër se 30 ditë."); if (model.financialCapacity.updatedAt && Date.now() - Date.parse(model.financialCapacity.updatedAt) > 365 * DAY) staleInformation.push("Të dhënat financiare janë më të vjetra se 12 muaj.");
+  for (const failed of confirmedMandatoryFailures) capabilityGaps.push(`Kërkesë e konfirmuar që nuk mbulohet: ${failed.tenderRequirement}.`);
+  const hardBlocked = tender.lifecycleStatus === "cancelled" || tender.lifecycleStatus === "correction" || (deadlineMs != null && deadlineMs <= 0) || Boolean(excluded || excludedAuthority) || !valueInRange || confirmedMandatoryFailures.length > 0;
+  if (tender.lifecycleStatus === "cancelled") blockers.push("Procedura është anuluar dhe nuk është mundësi aktive."); if (tender.lifecycleStatus === "correction") blockers.push("Ky është njoftim korrigjimi; lidheni me procedurën kryesore para vendimit."); if (confirmedMandatoryFailures.length) blockers.push(`Nuk plotësohen ${confirmedMandatoryFailures.length} kërkesa të identifikuara me siguri të lartë.`); if (!valueInRange) blockers.push("Fondi limit është jashtë kapacitetit financiar të lirë të deklaruar.");
+  const components = { scope: clamp(scopeFit.scope, MAX.scope), compliance: clamp(compliance, MAX.compliance), experience: clamp(experience, MAX.experience), people: clamp(people, MAX.people), equipment: clamp(equipment, MAX.equipment), financial: clamp(financial, MAX.financial), geography: clamp(geography, MAX.geography), schedule: clamp(schedule, MAX.schedule), preference: clamp(preference, MAX.preference) };
+  let score = clamp(Object.values(components).reduce((sum, value) => sum + value, 0)); if (hardBlocked) score = 0;
+  const mandatoryEvidence = requirementMatches.filter((item) => item.confidence >= 0.8).length; const evidenceCoverage = clamp((mandatoryEvidence * 12) + Math.min(40, Math.round(tender.extractionConfidence * 40)) + (tender.cpvCodes.length ? 12 : 0) + (tender.limitFundAll != null ? 8 : 0));
+  let eligibility: TenderEligibility = hardBlocked ? "not_eligible" : mandatoryEvidence === 0 || requirementMatches.some((item) => item.result === "unknown" || item.result === "missing") ? "eligibility_pending" : "eligible"; if (hardBlocked) eligibility = "not_eligible";
+  const eligibilityReason = eligibility === "eligible" ? "Kërkesat e identifikuara në buletin u mbuluan nga profili aktiv." : eligibility === "not_eligible" ? "Të paktën një kërkesë e identifikuar me siguri të lartë nuk mbulohet, ose mundësia nuk është aktive." : "Buletini përmbledhës nuk përmban të gjitha kriteret; përputhja është e mirë, por kualifikimi kërkon verifikim.";
+  let decision: TenderMatch["decision"] = hardBlocked ? "blocked" : score >= 80 ? "high_fit" : score >= 65 ? "good_fit" : score >= 45 ? "review" : "low_fit"; if (eligibility === "eligibility_pending" && decision === "high_fit") decision = "good_fit";
+  const reasons = [scopeFit.direct.length || scopeFit.legacy.length ? `Përputhje direkte me ${(scopeFit.direct.length ? scopeFit.direct : scopeFit.legacy).join(", ")}.` : scopeFit.partners.length ? `Mbulim i mundshëm nga partnerët e aprovuar: ${scopeFit.partners.map((item) => item.name).join(", ")}.` : "Nuk u gjet specializim i drejtpërdrejtë.", similarProjects.length ? `${similarProjects.length} projekt${similarProjects.length === 1 ? "" : "e"} reference janë të ngjashme.` : "Eksperienca e krahasueshme nuk është verifikuar ende.", value == null ? "Fondi limit nuk është i qartë." : valueInRange ? "Vlera është brenda kapacitetit financiar të deklaruar." : "Vlera tejkalon kapacitetin financiar të lirë.", eligibilityReason];
+  return { tenderId: tender.id, score, decision, components, blockers: [...new Set(blockers)], reasons, matchedTerms: tenderTerms.length ? tenderTerms : scopeFit.direct.length ? scopeFit.direct : scopeFit.partners.map((partner) => `partner: ${partner.name}`), missingInformation: [...new Set(missingInformation)], confirmedCapabilities: [...new Set(confirmedCapabilities)], capabilityGaps: [...new Set(capabilityGaps)], staleInformation: [...new Set(staleInformation)], requirementMatches, eligibility, eligibilityReason, evidenceCoverage, capabilityVersion: model.activeVersion, updatedAt: new Date().toISOString() };
 }
 
-export function decisionLabel(decision: TenderMatch["decision"]): string {
-  return ({ high_fit: "Përshtatje shumë e lartë", good_fit: "Përshtatje e mirë", review: "Për rishikim", low_fit: "Përshtatje e dobët", blocked: "I bllokuar" })[decision];
-}
+export function decisionLabel(decision: TenderMatch["decision"]): string { return ({ high_fit: "Përshtatje shumë e lartë", good_fit: "Përshtatje e mirë", review: "Për rishikim", low_fit: "Përshtatje e dobët", blocked: "I bllokuar" })[decision]; }

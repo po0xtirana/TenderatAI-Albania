@@ -3,7 +3,7 @@ import { ensureCompanyWorkspaceId, getSupabaseServerClient } from "./supabase-se
 import {
   activateCapabilities, addCapabilityDocument, exportPersistedState, getCapabilities,
   getCapabilityVersions, getSnapshot, getTender, getTenderDeliveryPlan, importPersistedState,
-  processBulletin, queueBulletin, recordFeedback, removeCapabilityDocument, updateCapabilitySection,
+  processBulletin, queueBulletin, recordFeedback, removeCapabilityDocument, updateCapabilitySection, enrichTenderInsights,
   removeBulletin, updateCompany, updateTenderDeliveryAllocation, updateTenderWorkflow
 } from "./store";
 import type { LocalPersistedState } from "./store";
@@ -72,6 +72,13 @@ export async function cloudDeliveryPlan(tenderId: string) { await loadState(); r
 
 export async function cloudUpdateDelivery(tenderId: string, allocationId: string, patch: Record<string, unknown>) {
   const { client, userId } = await loadState(); const value = updateTenderDeliveryAllocation(tenderId, allocationId, patch); if (value) await saveState(client, userId); return value;
+}
+
+export async function cloudEnrichTenderInsights(tenderId: string) {
+  const { client, userId } = await loadState();
+  const value = await enrichTenderInsights(tenderId);
+  if (value) await saveState(client, userId);
+  return value;
 }
 
 function bulletinPath(userId: string, bulletinId: string): string { return `${userId}/${bulletinId}.pdf`; }

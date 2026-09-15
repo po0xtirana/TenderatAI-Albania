@@ -1,5 +1,8 @@
 export type ProcessingStatus = "queued" | "processing" | "completed" | "needs_review" | "failed";
 export type TenderDecision = "high_fit" | "good_fit" | "review" | "low_fit" | "blocked";
+/** Eligibility answers whether a confirmed tender requirement can be met. It is
+ * deliberately separate from the commercial fit score. */
+export type TenderEligibility = "eligible" | "eligibility_pending" | "not_eligible";
 export type TenderWorkflowStatus = "new" | "watching" | "reviewing" | "bid" | "no_bid";
 
 export type Evidence = { page: number; text: string; confidence: number };
@@ -178,6 +181,10 @@ export type TenderMatch = {
   tenderId: string; score: number; decision: TenderDecision; components: MatchComponents; blockers: string[];
   reasons: string[]; matchedTerms: string[]; missingInformation: string[]; confirmedCapabilities: string[];
   capabilityGaps: string[]; staleInformation: string[]; requirementMatches: CapabilityRequirementMatch[];
+  /** A fit score can be high while eligibility is pending when the bulletin does not publish the full criteria. */
+  eligibility: TenderEligibility;
+  eligibilityReason: string;
+  evidenceCoverage: number;
   capabilityVersion: number; updatedAt: string;
 };
 

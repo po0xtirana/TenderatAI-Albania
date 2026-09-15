@@ -264,13 +264,29 @@ async function addOptionalAiInsights(records: TenderRecord[], limitOverride?: nu
   const requestedLimit = limitOverride ?? configuredLimit;
   const limit = Number.isFinite(requestedLimit) ? Math.max(0, Math.min(25, requestedLimit)) : 12;
   if (!limit) return;
-  const candidates = [...records].sort((a, b) => b.match.score - a.match.score).slice(0, limit);
+  // Spend model calls only on opportunities worth reviewing. A user can still
+  // request an on-demand explanation for another tender from its detail page.
+  const candidates = records.filter((record) => ["high_fit", "good_fit"].includes(record.match.decision) && record.match.eligibility !== "not_eligible").sort((a, b) => b.match.score - a.match.score).slice(0, limit);
   for (let index = 0; index < candidates.length; index += 3) {
     await Promise.all(candidates.slice(index, index + 3).map(async (record) => {
       try { record.insights = [...record.insights, ...await generateAiInsights(record.tender)]; }
       catch (error) { console.warn("[bulletin-processing] optional AI insight skipped", { tenderId: record.tender.id, error: error instanceof Error ? error.message : String(error) }); }
     }));
   }
+}
+
+export async function enrichTenderInsights(id: string): Promise<TenderRecord | null> {
+  const store = runtime();
+  const record = getTender(id);
+  if (!record) return null;
+  if (!hasAiProvider()) throw new Error("Ofruesi AI nuk është konfiguruar në server.");
+  const existingAi = record.insights.filter((item) => item.id.includes("-ai-"));
+  const generated = await generateAiInsights(record.tender);
+  record.insights = [...refreshedInsights(record).filter((item) => !item.id.includes("-ai-")), ...generated.map((item, index) => ({ ...item, id: `${record.tender.id}-ai-${index}` }))];
+  // Retain a previous valid AI explanation only if the provider returns nothing.
+  if (!generated.length && existingAi.length) record.insights = [...record.insights, ...existingAi];
+  persist(store);
+  return structuredClone(record);
 }
 
 export function getSnapshot(options: { period?: "30d" | "90d" | "all"; decision?: string; query?: string; authorities?: string[] } = {}): AppSnapshot {
