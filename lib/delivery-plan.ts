@@ -27,13 +27,20 @@ function packageSeeds(tender: TenderNotice): PackageSeed[] {
   return [...unique.values()].slice(0, 12);
 }
 
-function internalFit(seed: PackageSeed, model: CompanyCapabilityModel): { name: string } | null {
+const availableNow = (value: string | null | undefined) => !value || !Number.isFinite(Date.parse(value)) || Date.parse(value) <= Date.now();
+
+function internalFit(seed: PackageSeed, model: CompanyCapabilityModel): { name: string; crew: string | null } | null {
   const taskText = normalize(`${seed.task} ${seed.requirements.join(" ")}`);
   const found = model.workCapabilities.find((work) => {
     if (!work.active || work.deliveryMethod === "subcontracted") return false;
     return (seed.cpv && work.cpvPrefixes.some((prefix) => seed.cpv.startsWith(prefix) || prefix.startsWith(seed.cpv.slice(0, 4)))) || [work.trade, ...work.projectTypes, ...work.buildingTypes].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText)));
   });
-  return found ? { name: found.trade } : null;
+  if (!found) return null;
+  const crew = model.crews.find((item) => item.active && item.availableCrewCount > 0 && availableNow(item.availableFrom) && [item.workCategory, item.name, ...item.roles.flatMap((role) => [role.role, role.skill])].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText))));
+  const labour = model.labourPools.find((item) => item.active && item.availableHeadcount > 0 && availableNow(item.availableFrom) && [item.role, ...item.skills].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText))));
+  // A declared specialism without a free crew or relevant labour is not yet an
+  // executable internal allocation. The matcher may still show it as scope fit.
+  return crew || labour ? { name: found.trade, crew: crew?.name ?? null } : null;
 }
 
 function partnerFit(seed: PackageSeed, partner: CapabilityPartner): { score: number; capability: string } | null {
@@ -44,7 +51,7 @@ function partnerFit(seed: PackageSeed, partner: CapabilityPartner): { score: num
   const codeHit = seed.cpv && codes.some((code) => seed.cpv.startsWith(code) || code.startsWith(seed.cpv.slice(0, 4)));
   const termHit = terms.some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText)));
   if (!codeHit && !termHit) return null;
-  const capability = (partner.capabilities ?? []).find((item) => item.active && (item.cpvCodes.includes(seed.cpv) || item.tasks.some((task) => taskText.includes(normalize(task)))))?.name ?? partner.categories[0] ?? "Specializim i regjistruar";
+  const capability = (partner.capabilities ?? []).find((item) => item.active && item.headcount > 0 && item.crewCount > 0 && availableNow(item.availableFrom) && (item.cpvCodes.includes(seed.cpv) || item.tasks.some((task) => taskText.includes(normalize(task)))))?.name ?? partner.categories[0] ?? "Specializim i regjistruar";
   return { score: (codeHit ? 2 : 0) + (termHit ? 1 : 0) + (partner.approvalStatus === "approved" ? 1 : 0), capability };
 }
 
@@ -84,7 +91,7 @@ export function generateDeliveryPlan(tender: TenderNotice, model: CompanyCapabil
       const hybrid = allocation(workPackage.id, "hybrid", 70, bestPartner.partner.id, null, internal.name, null, `Kompania mbulon pjesën kryesore; ${bestPartner.partner.name} plotëson ${bestPartner.fit.capability}.`, bestPartner.partner.dependencyRisk, 0.74); hybrid.partnerName = bestPartner.partner.name; allocations.push(hybrid);
       const partnerAllocation = allocation(workPackage.id, "partner", 30, bestPartner.partner.id, null, null, null, `Partner i sugjeruar për pjesën specialistike: ${bestPartner.fit.capability}.`, bestPartner.partner.dependencyRisk, 0.74); partnerAllocation.partnerName = bestPartner.partner.name; allocations.push(partnerAllocation);
     } else if (internal) {
-      allocations.push(allocation(workPackage.id, "internal", 100, null, null, internal.name, null, "Përputhet me fushën aktive të kompanisë dhe mund të realizohet me burime të brendshme.", "low", 0.8));
+      allocations.push(allocation(workPackage.id, "internal", 100, null, null, internal.crew ? `${internal.name} · ${internal.crew}` : internal.name, null, `Përputhet me fushën aktive dhe ${internal.crew ? `ekipi ${internal.crew} është i disponueshëm.` : "një grup pune i disponueshëm e mbulon."}`, "low", 0.8));
     } else if (bestPartner) {
       const partnerAllocation = allocation(workPackage.id, "partner", 100, bestPartner.partner.id, null, null, null, `Nuk u gjet mbulim i brendshëm; ${bestPartner.partner.name} mbulon ${bestPartner.fit.capability}.`, bestPartner.partner.dependencyRisk, 0.72); partnerAllocation.partnerName = bestPartner.partner.name; allocations.push(partnerAllocation);
     } else {
