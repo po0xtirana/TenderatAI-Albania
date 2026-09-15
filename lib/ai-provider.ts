@@ -48,3 +48,18 @@ export function readAiResponseText(response: unknown): string {
     return content.flatMap((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []);
   }).join("\n");
 }
+
+export function parseAiJson<T>(text: string, fallback: T): T {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  if (!cleaned) return fallback;
+  try { return JSON.parse(cleaned) as T; }
+  catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(cleaned.slice(start, end + 1)) as T; }
+      catch { return fallback; }
+    }
+    return fallback;
+  }
+}

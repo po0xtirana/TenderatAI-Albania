@@ -1,5 +1,5 @@
 import { CONSTRUCTION_CPV_CATALOG, findCpvByIds, suggestCpvSpecializations, type CpvSuggestion } from "./cpv-catalog";
-import { getAiClient, getAiModel, isUsingOpenRouter, readAiResponseText } from "./ai-provider";
+import { getAiClient, getAiModel, isUsingOpenRouter, parseAiJson, readAiResponseText } from "./ai-provider";
 
 type AiSelection = { ids?: string[] };
 
@@ -29,7 +29,7 @@ export async function getWorkCapabilitySuggestions(query: string): Promise<{ sug
         }
       }
     }));
-    const parsed = JSON.parse(responseText || "{\"ids\":[]}") as AiSelection;
+    const parsed = parseAiJson<AiSelection>(responseText, { ids: [] });
     const aiItems = findCpvByIds(parsed.ids ?? []).map((item) => ({ ...item, score: 65, reason: "Sugjeruar nga analiza semantike; kërkon konfirmim" }));
     const merged = [...local, ...aiItems].filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index).sort((a, b) => b.score - a.score).slice(0, 10);
     return { suggestions: merged, source: "catalog+ai" };
