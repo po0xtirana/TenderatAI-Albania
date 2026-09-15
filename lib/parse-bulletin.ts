@@ -169,6 +169,12 @@ export function segmentContractNotices(pages: ParsedPage[]): Array<{ text: strin
 }
 
 export async function extractBulletin(buffer: Buffer, bulletinId: string): Promise<{ bulletin: Omit<import("./types").Bulletin, "fileName" | "fileHash" | "uploadedAt">; notices: TenderNotice[] }> {
+  // pdf.js needs a DOM matrix even when we only extract text. Node/Vercel does
+  // not provide one, while pdf-parse already ships the compatible canvas shim.
+  if (typeof globalThis.DOMMatrix === "undefined") {
+    const canvas = await import("@napi-rs/canvas");
+    globalThis.DOMMatrix = canvas.DOMMatrix as typeof DOMMatrix;
+  }
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: buffer });
   try {
