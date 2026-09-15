@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { queueBulletinData } from "@/lib/data";
+import { processBulletinData, queueBulletinData, readSnapshot } from "@/lib/data";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -15,5 +15,7 @@ export async function POST(request: Request) {
   const pdfHeader = buffer.indexOf("%PDF-", 0, "ascii");
   if (pdfHeader < 0 || pdfHeader > 1024) return NextResponse.json({ error: "Skedari nuk ka një strukturë PDF të vlefshme." }, { status: 415 });
   const bulletin = await queueBulletinData(file.name, buffer);
-  return NextResponse.json({ bulletin }, { status: 202 });
+  await processBulletinData(bulletin.id);
+  const processed = (await readSnapshot()).bulletins.find((item) => item.id === bulletin.id) ?? bulletin;
+  return NextResponse.json({ bulletin: processed }, { status: 202 });
 }

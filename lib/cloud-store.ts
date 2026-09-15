@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { getCompanyWorkspaceId, getSupabaseServerClient } from "./supabase-server";
+import { ensureCompanyWorkspaceId, getSupabaseServerClient } from "./supabase-server";
 import {
   activateCapabilities, addCapabilityDocument, exportPersistedState, getCapabilities,
   getCapabilityVersions, getSnapshot, getTender, getTenderDeliveryPlan, importPersistedState,
@@ -15,8 +15,7 @@ async function clientAndUser() {
   const client = await getSupabaseServerClient();
   if (!client) throw new Error(process.env.PASSWORDLESS_MODE === "1" ? "Mungon çelësi privat ekzistues i Supabase në konfigurimin e serverit." : "Supabase nuk është konfiguruar.");
   if (process.env.PASSWORDLESS_MODE === "1") {
-    const userId = getCompanyWorkspaceId();
-    if (!userId) throw new Error("Mungon COMPANY_WORKSPACE_ID ose SUPABASE_IMPORT_USER_ID.");
+    const userId = await ensureCompanyWorkspaceId(client);
     return { client, user: { id: userId } };
   }
   const { data, error } = await client.auth.getUser();
