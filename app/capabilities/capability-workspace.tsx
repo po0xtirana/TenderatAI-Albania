@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ActiveCommitment, BidRule, CapabilityDocument, CapabilityPartner, CapabilityReadiness, CapabilitySectionKey,
   CompanyCapabilityModel, ComplianceRecord, CrewCapability, EquipmentResource, KeyPerson, LabourPool,
@@ -32,6 +32,24 @@ const join = (value: string[]) => value.join(", ");
 const numberValue = (value: string) => value === "" ? null : Number(value);
 const money = (value: number | null) => value == null ? "—" : new Intl.NumberFormat("sq-AL", { style: "currency", currency: "ALL", maximumFractionDigits: 0 }).format(value);
 
+function capabilityPayload(section: CapabilitySectionKey, model: CompanyCapabilityModel): Record<string, unknown> {
+  if (section === "identity") return { identity: model.identity, operatingLocations: model.operatingLocations };
+  if (section === "work") return { workCapabilities: model.workCapabilities };
+  if (section === "geography") return { serviceAreas: model.serviceAreas };
+  if (section === "compliance") return { complianceRecords: model.complianceRecords };
+  if (section === "people") return { keyPeople: model.keyPeople, labourPools: model.labourPools };
+  if (section === "crews") return { crews: model.crews };
+  if (section === "equipment") return { equipment: model.equipment };
+  if (section === "financial") return { financialCapacity: model.financialCapacity };
+  if (section === "experience") return { referenceProjects: model.referenceProjects };
+  if (section === "partners") return { partners: model.partners };
+  return { bidPreferences: model.bidPreferences, commitments: model.commitments };
+}
+
+const capabilityFingerprint = (section: CapabilitySectionKey, model: CompanyCapabilityModel) => JSON.stringify(capabilityPayload(section, model));
+const initialFingerprints = (model: CompanyCapabilityModel) => Object.fromEntries(steps.map((step) => [step.key, capabilityFingerprint(step.key, model)])) as Record<CapabilitySectionKey, string>;
+type AutosaveStatus = "saved" | "pending" | "saving" | "error";
+
 export function CapabilityWorkspace({ initialModel, initialReadiness }: { initialModel: CompanyCapabilityModel; initialReadiness: CapabilityReadiness }) {
   const [model, setModel] = useState(initialModel);
   const [readiness, setReadiness] = useState(initialReadiness);
@@ -40,6 +58,12 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
   const [activating, setActivating] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>("saved");
+  const modelRef = useRef(model);
+  const lastSavedFingerprints = useRef(initialFingerprints(initialModel));
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  modelRef.current = model;
 
   const currentIndex = steps.findIndex((step) => step.key === activeStep);
   const activeMeta = steps[currentIndex];
@@ -51,27 +75,62 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
   function addItem<K extends ListKey>(key: K, item: ListItem<K>) { setModel((current) => ({ ...current, [key]: [...current[key], item] })); }
   function removeItem<K extends ListKey>(key: K, id: string) { setModel((current) => ({ ...current, [key]: current[key].filter((item) => item.id !== id) })); }
 
-  function payloadFor(section: CapabilitySectionKey): Record<string, unknown> {
-    if (section === "identity") return { identity: model.identity, operatingLocations: model.operatingLocations };
-    if (section === "work") return { workCapabilities: model.workCapabilities };
-    if (section === "geography") return { serviceAreas: model.serviceAreas };
-    if (section === "compliance") return { complianceRecords: model.complianceRecords };
-    if (section === "people") return { keyPeople: model.keyPeople, labourPools: model.labourPools };
-    if (section === "crews") return { crews: model.crews };
-    if (section === "equipment") return { equipment: model.equipment };
-    if (section === "financial") return { financialCapacity: model.financialCapacity };
-    if (section === "experience") return { referenceProjects: model.referenceProjects };
-    if (section === "partners") return { partners: model.partners };
-    return { bidPreferences: model.bidPreferences, commitments: model.commitments };
+  function dirtySections(source = modelRef.current) {
+    return steps.map((step) => step.key).filter((section) => lastSavedFingerprints.current[section] !== capabilityFingerprint(section, source));
   }
+
+  function persistSection(section: CapabilitySectionKey, source: CompanyCapabilityModel, force = false) {
+    const payload = capabilityPayload(section, source);
+    const fingerprint = JSON.stringify(payload);
+    const operation = saveQueue.current.then(async () => {
+      if (!force && lastSavedFingerprints.current[section] === fingerprint) return;
+      const response = await fetch(`/api/company/capabilities/${section}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload), keepalive: true });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Ruajtja dështoi.");
+      lastSavedFingerprints.current[section] = fingerprint;
+      setReadiness(body.readiness);
+      setModel((current) => ({ ...current, draftUpdatedAt: body.model.draftUpdatedAt }));
+    });
+    saveQueue.current = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  async function flushAutosave() {
+    if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null; }
+    const sections = dirtySections();
+    if (!sections.length) { setAutosaveStatus("saved"); return true; }
+    setAutosaveStatus("saving"); setError("");
+    try {
+      for (const section of sections) await persistSection(section, modelRef.current);
+      setAutosaveStatus(dirtySections().length ? "pending" : "saved");
+      return true;
+    } catch (cause) {
+      setAutosaveStatus("error");
+      setError(cause instanceof Error ? `Ruajtja automatike dështoi: ${cause.message}` : "Ruajtja automatike dështoi.");
+      return false;
+    }
+  }
+
+  async function changeStep(next: CapabilitySectionKey) {
+    if (next === activeStep) return;
+    if (await flushAutosave()) setActiveStep(next);
+  }
+
+  useEffect(() => {
+    const sections = dirtySections(model);
+    if (!sections.length) return;
+    setAutosaveStatus("pending");
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => { void flushAutosave(); }, 900);
+    return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current); };
+  }, [model]);
 
   async function saveSection(continueNext = false) {
     setSaving(true); setError(""); setMessage("");
     try {
-      const response = await fetch(`/api/company/capabilities/${activeStep}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payloadFor(activeStep)) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Ruajtja dështoi.");
-      setModel(body.model); setReadiness(body.readiness); setMessage("Ndryshimet u ruajtën si draft. Renditja aktive nuk ka ndryshuar.");
+      if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null; }
+      await persistSection(activeStep, modelRef.current, true);
+      setAutosaveStatus("saved"); setMessage("Ndryshimet u ruajtën si draft. Renditja aktive nuk ka ndryshuar.");
       if (continueNext && currentIndex < steps.length - 1) setActiveStep(steps[currentIndex + 1].key);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Ruajtja dështoi."); }
     finally { setSaving(false); }
@@ -80,17 +139,19 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
   async function activate() {
     setActivating(true); setError(""); setMessage("");
     try {
+      if (!(await flushAutosave())) return;
       const response = await fetch("/api/company/capabilities/activate", { method: "POST" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Aktivizimi dështoi.");
-      setModel(body.model); setReadiness(body.readiness); setMessage(`Versioni ${body.version.version} u aktivizua. Tenderat u rillogaritën me profilin e ri.`);
+      lastSavedFingerprints.current = initialFingerprints(body.model);
+      setModel(body.model); setReadiness(body.readiness); setAutosaveStatus("saved"); setMessage(`Versioni ${body.version.version} u aktivizua. Tenderat u rillogaritën me profilin e ri.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Aktivizimi dështoi."); }
     finally { setActivating(false); }
   }
 
   return <div className="capability-workspace">
     <header className="cap-topbar">
-      <Link href="/" className="back-link">← Përmbledhja</Link>
+      <Link href="/" className="back-link" onClick={(event) => { event.preventDefault(); void flushAutosave().then((saved) => { if (saved) window.location.assign("/"); }); }}>← Përmbledhja</Link>
       <div className="detail-brand"><span className="brand-mark">T</span><b>Tenderat AI Albania</b></div>
       <div className="cap-version"><span className={model.status === "active" ? "status-live" : "status-draft"} />Versioni aktiv {model.activeVersion || "—"}</div>
     </header>
@@ -112,7 +173,7 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
           {steps.map((step) => {
             const score = readiness.sectionScores[step.key];
             const hasBlocker = [...readiness.blockingItems, ...readiness.expiredItems].some((item) => item.section === step.key);
-            return <button key={step.key} className={activeStep === step.key ? "active" : ""} type="button" onClick={() => setActiveStep(step.key)}>
+            return <button key={step.key} className={activeStep === step.key ? "active" : ""} type="button" onClick={() => void changeStep(step.key)}>
               <span className="step-number">{hasBlocker ? "!" : score === 100 ? "✓" : step.number}</span>
               <span><b>{step.title}</b><small>{step.short}</small></span><em>{score}%</em>
             </button>;
@@ -139,7 +200,7 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
             <DocumentManager section={activeStep} documents={model.documents.filter((document) => document.section === activeStep)} onChange={(documents) => setModel((current) => ({ ...current, documents: [...current.documents.filter((document) => document.section !== activeStep), ...documents] }))} />
           </div>
 
-          <footer className="editor-actions"><button type="button" className="secondary-button" disabled={saving || currentIndex === 0} onClick={() => setActiveStep(steps[currentIndex - 1].key)}>← Hapi i mëparshëm</button><span className="draft-note">Ndryshimet ruhen si draft</span><button type="button" className="secondary-button" disabled={saving} onClick={() => void saveSection(false)}>{saving ? "Duke ruajtur…" : "Ruaj draftin"}</button>{currentIndex < steps.length - 1 ? <button type="button" className="primary-button" disabled={saving} onClick={() => void saveSection(true)}>Ruaj dhe vazhdo →</button> : <button type="button" className="primary-button" disabled={saving || activating || !readiness.readyForMatching} onClick={() => void activate()}>{activating ? "Duke aktivizuar…" : `Aktivizo versionin ${model.activeVersion + 1}`}</button>}</footer>
+          <footer className="editor-actions"><button type="button" className="secondary-button" disabled={saving || currentIndex === 0} onClick={() => void changeStep(steps[currentIndex - 1].key)}>← Hapi i mëparshëm</button><span className={`draft-note autosave-${autosaveStatus}`} aria-live="polite">{autosaveStatus === "pending" ? "Ndryshime të paruajtura…" : autosaveStatus === "saving" ? "Duke ruajtur automatikisht…" : autosaveStatus === "error" ? "Ruajtja automatike dështoi" : "✓ Ruajtur automatikisht në server"}</span><button type="button" className="secondary-button" disabled={saving} onClick={() => void saveSection(false)}>{saving ? "Duke ruajtur…" : "Ruaj tani"}</button>{currentIndex < steps.length - 1 ? <button type="button" className="primary-button" disabled={saving} onClick={() => void saveSection(true)}>Ruaj dhe vazhdo →</button> : <button type="button" className="primary-button" disabled={saving || activating || !readiness.readyForMatching} onClick={() => void activate()}>{activating ? "Duke aktivizuar…" : `Aktivizo versionin ${model.activeVersion + 1}`}</button>}</footer>
         </section>
       </div>
     </main>
