@@ -125,7 +125,7 @@ export default function Home() {
     </aside>
 
     <main className="main-content">
-      <header className="topbar"><div className="breadcrumb"><span>HAPËSIRA E KOMPANISË</span><i>/</i><b>PËRMBLEDHJA</b></div><div className="top-actions"><span className="last-sync">Workspace lokale · të dhënat tuaja</span><button className="icon-button" aria-label="Njoftimet">♢<span className="notification-dot"/></button><span className="user-avatar">A</span></div></header>
+      <header className="topbar"><div className="breadcrumb"><span>HAPËSIRA E KOMPANISË</span><i>/</i><b>PËRMBLEDHJA</b></div><div className="top-actions"><span className="last-sync">Hapësirë private · të dhënat tuaja ruhen në cloud</span><button className="icon-button" aria-label="Njoftimet">♢<span className="notification-dot"/></button><span className="user-avatar">A</span></div></header>
 
       <section className="hero" id="overview">
         <div><p className="eyebrow light">INTELIGJENCË PËR TENDERAT</p><h1>Gjeni punën që kompania juaj mund të fitojë.</h1><p className="hero-copy">Ngarkoni buletinin e APP-së. Tenderat AI lexon çdo njoftim, kontrollon përputhjen me kapacitetet tuaja dhe vendos më të vlefshmet në krye.</p></div>
