@@ -1,0 +1,30 @@
+import { NextResponse } from "next/server";
+import { processBulletinData, queueBulletinData, readSnapshot } from "@/lib/data";
+import { getSupabaseServerClient, ensureCompanyWorkspaceId } from "@/lib/supabase-server";
+
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
+export async function POST(request: Request) {
+  const body = await request.json().catch(() => null) as { fileName?: unknown; path?: unknown } | null;
+  const fileName = typeof body?.fileName === "string" ? body.fileName : "";
+  const path = typeof body?.path === "string" ? body.path : "";
+  if (!fileName.toLowerCase().endsWith(".pdf") || !path) return NextResponse.json({ error: "Ngarkimi i PDF-së nuk është i vlefshëm." }, { status: 400 });
+  const client = await getSupabaseServerClient();
+  if (!client) return NextResponse.json({ error: "Lidhja me ruajtjen cloud nuk është konfiguruar." }, { status: 503 });
+  try {
+    const ownerId = await ensureCompanyWorkspaceId(client);
+    if (!path.startsWith(`${ownerId}/incoming/`) || !path.endsWith(".pdf")) return NextResponse.json({ error: "Rruga e ngarkimit nuk pranohet." }, { status: 400 });
+    const { data, error } = await client.storage.from("app-bulletins").download(path);
+    if (error || !data) throw new Error(error?.message ?? "PDF-ja e ngarkuar nuk u gjet.");
+    const buffer = Buffer.from(await data.arrayBuffer());
+    if (buffer.indexOf("%PDF-", 0, "ascii") < 0) throw new Error("Skedari nuk ka një strukturë PDF të vlefshme.");
+    const bulletin = await queueBulletinData(fileName, buffer);
+    await client.storage.from("app-bulletins").remove([path]);
+    await processBulletinData(bulletin.id);
+    const processed = (await readSnapshot()).bulletins.find((item) => item.id === bulletin.id) ?? bulletin;
+    return NextResponse.json({ bulletin: processed }, { status: 202 });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Procesimi i PDF-së dështoi." }, { status: 500 });
+  }
+}

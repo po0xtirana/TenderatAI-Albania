@@ -72,8 +72,12 @@ export default function Home() {
     let accepted = 0; const failures: string[] = [];
     try {
       for (const file of pdfs) {
-        const form = new FormData(); form.append("file", file);
-        const response = await fetch("/api/bulletins/upload", { method: "POST", body: form });
+        const preparation = await fetch("/api/bulletins/upload-url", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileName: file.name, size: file.size, contentType: file.type }) });
+        const target = await preparation.json().catch(() => null) as { uploadUrl?: string; path?: string; error?: string } | null;
+        if (!preparation.ok || !target?.uploadUrl || !target.path) { failures.push(`${file.name}: ${target?.error ?? "ngarkimi nuk u përgatit"}`); continue; }
+        const uploaded = await fetch(target.uploadUrl, { method: "PUT", headers: { "content-type": "application/pdf", "x-upsert": "false" }, body: file });
+        if (!uploaded.ok) { failures.push(`${file.name}: PDF-ja nuk u ruajt në cloud`); continue; }
+        const response = await fetch("/api/bulletins/complete-upload", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileName: file.name, path: target.path }) });
         if (response.ok) accepted += 1;
         else { const body = await response.json().catch(() => null) as { error?: string } | null; failures.push(`${file.name}: ${body?.error ?? "ngarkimi dështoi"}`); }
       }
