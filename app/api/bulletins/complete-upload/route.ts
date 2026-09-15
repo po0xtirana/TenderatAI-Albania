@@ -1,5 +1,5 @@
-import { NextResponse } from "next/server";
-import { processBulletinData, queueBulletinData, readSnapshot } from "@/lib/data";
+import { after, NextResponse } from "next/server";
+import { processBulletinData, queueBulletinData } from "@/lib/data";
 import { getSupabaseServerClient, ensureCompanyWorkspaceId } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -21,9 +21,11 @@ export async function POST(request: Request) {
     if (buffer.indexOf("%PDF-", 0, "ascii") < 0) throw new Error("Skedari nuk ka një strukturë PDF të vlefshme.");
     const bulletin = await queueBulletinData(fileName, buffer);
     await client.storage.from("app-bulletins").remove([path]);
-    await processBulletinData(bulletin.id);
-    const processed = (await readSnapshot()).bulletins.find((item) => item.id === bulletin.id) ?? bulletin;
-    return NextResponse.json({ bulletin: processed }, { status: 202 });
+    after(async () => {
+      try { await processBulletinData(bulletin.id); }
+      catch (processingError) { console.error("[bulletin-processing] background processing failed", processingError); }
+    });
+    return NextResponse.json({ bulletin }, { status: 202 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Procesimi i PDF-së dështoi." }, { status: 500 });
   }
