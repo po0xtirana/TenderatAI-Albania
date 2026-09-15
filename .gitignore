@@ -1,0 +1,14 @@
+node_modules/
+.next/
+.next-build/
+.next-dev/
+.next-stale-*/
+.handoff-stage*/
+.env*
+!.env.example
+*.log
+data/
+TenderatAI-Company-Ready/
+TenderatAI-Company-Ready.zip
+tsconfig.tsbuildinfo
+supabase/.temp/

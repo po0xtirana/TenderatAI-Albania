@@ -1,0 +1,45 @@
+{
+  "name": "tenderat-ai-albania",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "next dev -p 3012",
+    "dev:clean": "node scripts/clean-next-cache.mjs .next-dev && next dev -p 3012",
+    "build": "node scripts/clean-next-cache.mjs .next-build && next build",
+    "clean:caches": "node scripts/clean-next-cache.mjs .next-build .next-dev",
+    "reset:local": "node scripts/reset-local-data.mjs",
+    "validate:local": "tsx scripts/validate-local-export.ts",
+    "migrate:supabase:dry": "tsx scripts/migrate-local-to-supabase.ts",
+    "migrate:supabase": "tsx scripts/migrate-local-to-supabase.ts --execute",
+    "compare:supabase": "tsx scripts/compare-supabase-import.ts",
+    "worker": "tsx scripts/processing-worker.ts",
+    "worker:once": "tsx scripts/processing-worker.ts --once",
+    "provision:workspace": "tsx scripts/provision-workspace.ts",
+    "package:handoff": "powershell -ExecutionPolicy Bypass -File scripts/package-handoff.ps1",
+    "backup:supabase": "powershell -ExecutionPolicy Bypass -File scripts/backup-supabase.ps1",
+    "restore:supabase": "powershell -ExecutionPolicy Bypass -File scripts/restore-supabase.ps1",
+    "start": "next start -p 3012",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx scripts/run-tests.ts"
+  },
+  "dependencies": {
+    "@supabase/ssr": "0.12.5",
+    "@supabase/supabase-js": "2.112.4",
+    "next": "15.5.24",
+    "openai": "5.23.2",
+    "pdf-parse": "2.4.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsx": "4.23.11"
+  },
+  "devDependencies": {
+    "@types/node": "22.8.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "typescript": "5.6.3"
+  },
+  "overrides": {
+    "postcss": "8.5.26"
+  }
+}

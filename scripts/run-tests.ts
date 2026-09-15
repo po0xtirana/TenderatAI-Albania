@@ -1,0 +1,135 @@
+import assert from "node:assert/strict";
+process.env.TENDERAT_AI_TEST_MODE = "1";
+import { activateCapabilities, getCapabilities, getSnapshot, getTender, getTenderDeliveryPlan, recordFeedback, updateCapabilitySection, updateTenderWorkflow, updateTenderDeliveryAllocation } from "../lib/store";
+import { matchTender } from "../lib/matcher";
+import { normalize } from "../lib/normalize";
+import { calculateReadiness } from "../lib/capabilities";
+import { suggestCpvSpecializations } from "../lib/cpv-catalog";
+import { authorityId } from "../lib/authority-catalog";
+import { generateDeliveryPlan } from "../lib/delivery-plan";
+import { parseDate, parseFund, parseNotice, segmentContractNotices } from "../lib/parse-bulletin";
+
+const snapshot = getSnapshot({ period: "all" });
+assert.equal(snapshot.bulletins[0]?.bulletinNumber, "54");
+assert.equal(snapshot.bulletins[0]?.pageCount, 985);
+assert.equal(snapshot.tenders.length, 6);
+assert.equal(snapshot.tenders[0]?.match.score >= snapshot.tenders[1]?.match.score, true);
+assert.equal(snapshot.tenders.some((record) => record.match.decision === "blocked"), true);
+assert.equal(snapshot.tenders.some((record) => record.tender.cpvCodes.includes("45232400-6")), true);
+assert.equal(authorityId("Bashkia Vlore"), "bashkia-vlore");
+assert.equal(authorityId("Drejtoria e Përgjithshme e Objekteve Publike, Bashkia Tiranë"), "bashkia-tirane");
+assert.equal(getSnapshot({ authorities: ["bashkia-tirane"] }).tenders.every((record) => authorityId(record.tender.contractingAuthority) === "bashkia-tirane"), true);
+assert.equal(normalize("Rikualifikimi i Infrastrukturës në Korçë"), "rikualifikimi i infrastruktures ne korce");
+const facadeSuggestions = suggestCpvSpecializations("veshje fasade me gur ose panele");
+assert.equal(facadeSuggestions.some((item) => item.code === "45443000"), true);
+assert.equal(facadeSuggestions.some((item) => item.code === "45432210"), true);
+assert.equal(facadeSuggestions.some((item) => item.code === "45451200"), true);
+const roofSuggestions = suggestCpvSpecializations("rindërtim çatie me tjegulla dhe hidroizolim");
+assert.equal(roofSuggestions.some((item) => item.code === "45261910"), true);
+assert.equal(roofSuggestions.some((item) => item.code === "45261420"), true);
+
+assert.equal(parseDate("31.02.2026"), null, "impossible calendar dates must be rejected");
+assert.equal(parseFund("12,924,995.13 ALL"), 12_924_995.13, "fund parsing must preserve all grouped digits");
+const sampleNotice = (authority: string, reference: string, object: string, cpv: string, fund: string) => `
+1. Emri dhe adresa e Autoritetit Kontraktor
+Emri: ${authority}
+Adresa: Tiranë
+2. Lloji i procedurës: Procedurë e hapur
+3. Numri i referencës së procedurës: ${reference}
+4. Objekti i kontratës: ${object}
+5. Kodi sipas Fjalorit të Përbashkët të Prokurimit (FPP): ${cpv}
+6. Fondi limit: ${fund} ALL pa TVSH
+7. Kohëzgjatja e kontratës: 12 muaj
+8. Afati i fundit për paraqitjen dhe hapjen e ofertave: 30.11.2026 ora 10:00
+Informacion shtesë për dokumentet e procedurës dhe kërkesat e operatorëve ekonomikë.`;
+const segmented = segmentContractNotices([{ page: 17, text: `NJOFTIME KONTRATE${sampleNotice("Bashkia Vlorë", "REF-96249", "Rikonstruksion godine", "45000000-7", "12,924,995.13")}${sampleNotice("Bashkia Tiranë", "REF‐96250", "Veshje fasade me gur", "45410000‐4", "4.500.000")}` }]);
+assert.equal(segmented.length, 2, "multiple notices on one page must not overwrite each other");
+const parsedFirst = parseNotice(segmented[0].text, { start: 17, end: 17 }, 0, "bulletin-test");
+const parsedSecond = parseNotice(segmented[1].text, { start: 17, end: 17 }, 1, "bulletin-test");
+assert.equal(parsedFirst.contractingAuthority, "Bashkia Vlorë");
+assert.equal(parsedFirst.limitFundAll, 12_924_995.13);
+assert.equal(parsedSecond.referenceNumber, "REF-96250");
+assert.equal(parsedSecond.cpvCodes.includes("45410000-4"), true, "unicode dash CPV codes must be normalized");
+const splitAcrossPages = segmentContractNotices([
+  { page: 20, text: `NJOFTIME KONTRATE${sampleNotice("Bashkia Has", "REF-96316-08-15-2026", "Rehabilitim kanali", "44130000-0", "96,935,269.17")}\n1. Emri dhe adresa e Autoritetit Kontraktor:\nEmri: Shoqëria Rajonale Ujësjellës Kanalizime Vlorë sh.a` },
+  { page: 21, text: `2. Lloji i procedurës: Procedurë e hapur\n3. Numri i referencës së procedurës: REF-96305-08-14-2026\n4. Objekti i kontratës: Impiant i trajtimit të ujërave\n5. Kodi sipas Fjalorit të Përbashkët të Prokurimit (FPP): 45247130-0\n6. Fondi limit: 1,129,210,978 ALL\n7. Kohëzgjatja e kontratës: 18 muaj\n8. Afati i fundit për paraqitjen dhe hapjen e ofertave: 30.11.2026 ora 10:00\nInformacion shtesë për kërkesat e operatorëve ekonomikë dhe zbatimin e kontratës.` }
+]);
+assert.equal(splitAcrossPages.length, 2, "a notice header at the end of one page must carry into the next page");
+assert.equal(parseNotice(splitAcrossPages[1].text, { start: 20, end: 21 }, 1, "bulletin-test").contractingAuthority, "Shoqëria Rajonale Ujësjellës Kanalizime Vlorë sh.a");
+const lotSegments = segmentContractNotices([
+  { page: 30, text: "NJOFTIME KONTRATE\n1. Emri dhe adresa e Autoritetit Kontraktor:\nEmri: Operatori i Blerjeve të Përqendruara\n2. Lloji i procedurës: Procedurë e hapur\n3. Numri i referencës së procedurës/Lotit: REF-96791-08-20-2026\nLoti 1: REF-96793-08-20-2026" },
+  { page: 31, text: "Loti 2: REF-96795-08-20-2026\nLoti 3: REF-96797-08-20-2026\n4. Objekti i kontratës: Shërbim kalibrimi laboratorik\n5. Kodi sipas Fjalorit të Përbashkët të Prokurimit (FPP): 50433000-9\n6. Fondi limit: 28,304,513.33 ALL\n7. Kohëzgjatja e kontratës: 24 muaj\n8. Afati i fundit për paraqitjen dhe hapjen e ofertave: 30.11.2026 ora 10:00\nInformacion shtesë për secilin lot dhe dokumentet e procedurës." }
+]);
+assert.equal(lotSegments.length, 1, "lot reference numbers must not split one procurement notice into separate tenders");
+assert.equal(parseNotice(lotSegments[0].text, { start: 30, end: 31 }, 0, "bulletin-test").referenceNumber, "REF-96791-08-20-2026");
+const cancelledNotice = parseNotice("REF-88956-06-05-2026\nb) Objekti i prokurimit të procedurës së anuluar të prokurimit: Blerje pajisje mirëmbajtjeje\nc) Fondi limit i procedurës së anuluar: 3,200,831 ALL\nInformacion shtesë për anulimin e procedurës dhe operatorët ekonomikë.", { start: 58, end: 58 }, 0, "bulletin-test");
+assert.equal(cancelledNotice.lifecycleStatus, "cancelled", "cancelled procedures must not appear as active opportunities");
+assert.equal(matchTender(cancelledNotice, snapshot.company).decision, "blocked", "cancelled procedures must never receive an opportunity recommendation");
+
+const company = { ...snapshot.company, excludedTerms: ["ujësjellës"] };
+const blocked = matchTender(snapshot.tenders[1].tender, company);
+assert.equal(blocked.decision, "blocked");
+assert.equal(blocked.score, 0);
+
+const workflowTender = snapshot.tenders[0];
+assert.ok(workflowTender);
+const feedbackOnce = recordFeedback(workflowTender.tender.id, true);
+const feedbackTwice = recordFeedback(workflowTender.tender.id, true);
+assert.equal(feedbackOnce?.match.score, feedbackTwice?.match.score, "repeated relevance feedback must be idempotent");
+assert.equal(feedbackTwice?.relevanceFeedback, true);
+assert.equal(updateTenderWorkflow(workflowTender.tender.id, "watching")?.workflowStatus, "watching");
+assert.equal(getTender(workflowTender.tender.id)?.workflowStatus, "watching");
+
+const capabilityBefore = getCapabilities();
+assert.equal(capabilityBefore.readiness.overallScore >= 70, true);
+assert.equal(capabilityBefore.readiness.readyForMatching, true);
+assert.equal(capabilityBefore.model.crews.length >= 2, true);
+assert.equal(capabilityBefore.model.keyPeople.length >= 2, true);
+assert.equal(capabilityBefore.model.referenceProjects.length >= 2, true);
+const initialPlan = getTenderDeliveryPlan(snapshot.tenders[0].tender.id);
+assert.ok(initialPlan);
+assert.equal(initialPlan.workPackages.length > 0, true);
+assert.equal(initialPlan.workPackages.every((item) => item.evidenceText.length > 0), true);
+assert.equal(initialPlan.allocations.some((item) => item.source === "internal" || item.source === "partner" || item.source === "uncovered"), true);
+const partnerTender = structuredClone(snapshot.tenders[0].tender);
+partnerTender.contractObject = "Instalime elektrike dhe ndriçim publik";
+partnerTender.cpvCodes = ["45310000-0"];
+partnerTender.sourceText += "\nInstalime elektrike dhe ndriçim publik.";
+const partnerPlan = generateDeliveryPlan(partnerTender, capabilityBefore.model);
+assert.equal(partnerPlan.allocations.some((item) => item.source === "partner" && item.partnerId === "partner-electrical"), true);
+const pendingPartnerModel = structuredClone(capabilityBefore.model);
+const electricalPartner = pendingPartnerModel.partners.find((item) => item.id === "partner-electrical");
+assert.ok(electricalPartner);
+electricalPartner.approvalStatus = "pending";
+const pendingPartnerPlan = generateDeliveryPlan(partnerTender, pendingPartnerModel);
+assert.equal(pendingPartnerPlan.allocations.some((item) => item.source === "partner" && item.partnerId === "partner-electrical"), false, "unapproved partners must not be allocated as confirmed capacity");
+const firstAllocation = initialPlan.allocations.find((item) => item.source !== "rental");
+assert.ok(firstAllocation);
+assert.equal(updateTenderDeliveryAllocation(snapshot.tenders[0].tender.id, firstAllocation.id, { status: "confirmed" })?.deliveryPlan?.allocations.find((item) => item.id === firstAllocation.id)?.status, "confirmed");
+
+const target = snapshot.tenders.find((record) => record.tender.contractObject.toLocaleLowerCase("sq-AL").includes("ujësjellësit"));
+assert.ok(target);
+const scoreBeforeDraft = getTender(target.tender.id)?.match.score;
+updateCapabilitySection("rules", {
+  bidPreferences: { ...capabilityBefore.model.bidPreferences, excludedProjectTypes: [...capabilityBefore.model.bidPreferences.excludedProjectTypes, "ujësjellësit"] },
+  commitments: capabilityBefore.model.commitments
+});
+assert.equal(getTender(target.tender.id)?.match.score, scoreBeforeDraft, "draft edits must not change active tender rankings");
+const activated = activateCapabilities();
+assert.equal(activated.version.version, capabilityBefore.model.activeVersion + 1);
+assert.equal(getTender(target.tender.id)?.match.decision, "blocked", "activation must re-rank with the new version");
+
+const expiredModel = structuredClone(capabilityBefore.model);
+expiredModel.complianceRecords[0].expiryDate = "2020-01-01";
+const expiredReadiness = calculateReadiness(expiredModel);
+assert.equal(expiredReadiness.expiredItems.length > 0, true);
+assert.equal(expiredReadiness.readyForMatching, false);
+
+const requirementTender = structuredClone(snapshot.tenders[0].tender);
+requirementTender.sourceText += "\nKapaciteti teknik: kërkohet eskavator dhe drejtues teknik.";
+const requirementMatch = matchTender(requirementTender, snapshot.company, capabilityBefore.model);
+assert.equal(requirementMatch.requirementMatches.some((item) => item.requirementType === "equipment" && item.result === "confirmed"), true);
+assert.equal(requirementMatch.requirementMatches.some((item) => item.requirementType === "personnel" && item.result === "confirmed"), true);
+assert.equal(requirementMatch.capabilityVersion, capabilityBefore.model.activeVersion);
+
+console.log("Tenderat AI Albania tests passed", JSON.stringify({ bulletins: snapshot.bulletins.length, tenders: snapshot.tenders.length, topScore: snapshot.tenders[0]?.match.score }));
