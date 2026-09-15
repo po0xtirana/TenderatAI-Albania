@@ -155,7 +155,17 @@ export async function cloudProcessBulletin(id: string): Promise<void> {
   const { data, error } = await client.storage.from("app-bulletins").download(bulletinPath(userId, id));
   if (error || !data) throw new Error(error?.message ?? "PDF-ja nuk u gjet në cloud.");
   importPersistedState(exportPersistedState(), new Map([[id, Buffer.from(await data.arrayBuffer())]]));
-  await processBulletin(id);
+  const persistExtractedResults = async () => {
+    const extracted = getSnapshot().bulletins.find((item) => item.id === id);
+    await saveState(client, userId);
+    if (extracted) await upsertCloudBulletin(client, userId, extracted);
+  };
+  await processBulletin(id, {
+    // Keep the synchronous Vercel request short. AI enrichment is useful, but the
+    // deterministic extraction and capability ranking are the source of truth.
+    aiLimit: process.env.VERCEL ? 3 : undefined,
+    afterDeterministic: persistExtractedResults
+  });
   const refreshed = getSnapshot().bulletins.find((item) => item.id === id);
   await saveState(client, userId);
   if (refreshed) {

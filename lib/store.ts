@@ -258,10 +258,11 @@ function runtime(): RuntimeStore {
   return store;
 }
 
-async function addOptionalAiInsights(records: TenderRecord[]): Promise<void> {
+async function addOptionalAiInsights(records: TenderRecord[], limitOverride?: number): Promise<void> {
   if (!hasAiProvider()) return;
   const configuredLimit = Number.parseInt(process.env.OPENAI_TENDER_MAX_NOTICES ?? "12", 10);
-  const limit = Number.isFinite(configuredLimit) ? Math.max(0, Math.min(25, configuredLimit)) : 12;
+  const requestedLimit = limitOverride ?? configuredLimit;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(0, Math.min(25, requestedLimit)) : 12;
   if (!limit) return;
   const candidates = [...records].sort((a, b) => b.match.score - a.match.score).slice(0, limit);
   for (let index = 0; index < candidates.length; index += 3) {
@@ -397,7 +398,12 @@ export function requestBulletinProcessing(id: string): Bulletin | null {
   return structuredClone(bulletin);
 }
 
-export async function processBulletin(id: string): Promise<void> {
+export type ProcessBulletinOptions = {
+  aiLimit?: number;
+  afterDeterministic?: () => Promise<void>;
+};
+
+export async function processBulletin(id: string, options: ProcessBulletinOptions = {}): Promise<void> {
   const store = runtime(); const bulletin = store.bulletins.find((item) => item.id === id); const buffer = store.files.get(id);
   if (!bulletin || !buffer || bulletin.status === "processing") return;
   bulletin.status = "processing"; bulletin.processingStage = "extracting";
@@ -420,7 +426,11 @@ export async function processBulletin(id: string): Promise<void> {
     dedupeTenderRecords(store);
     bulletin.status = parsed.notices.length ? "completed" : "needs_review";
     bulletin.processingStage = parsed.notices.length ? "completed" : "needs_review";
-    try { await addOptionalAiInsights(records); }
+    // Persist the deterministic extraction before optional AI enrichment. A slow or
+    // unavailable provider must never make a successfully parsed bulletin disappear.
+    persist(store);
+    await options.afterDeterministic?.();
+    try { await addOptionalAiInsights(records, options.aiLimit); }
     catch (error) { console.warn("[bulletin-processing] optional AI pass failed", { bulletinId: id, error: error instanceof Error ? error.message : String(error) }); }
     persist(store);
   } catch (error) {
