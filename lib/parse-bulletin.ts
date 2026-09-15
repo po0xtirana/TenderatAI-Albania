@@ -1,6 +1,6 @@
 import { cleanText } from "./normalize";
 import type { TenderNotice } from "./types";
-import "pdf-parse/worker";
+import { getData as getPdfWorkerData } from "pdf-parse/worker";
 import { PDFParse } from "pdf-parse";
 
 export type ParsedPage = { page: number; text: string };
@@ -171,6 +171,10 @@ export function segmentContractNotices(pages: ParsedPage[]): Array<{ text: strin
 }
 
 export async function extractBulletin(buffer: Buffer, bulletinId: string): Promise<{ bulletin: Omit<import("./types").Bulletin, "fileName" | "fileHash" | "uploadedAt">; notices: TenderNotice[] }> {
+  // Embed the worker instead of resolving a physical pdf.worker.mjs file.
+  // Vercel functions relocate Next.js chunks under /var/task, where pdf.js's
+  // default relative worker path does not exist.
+  PDFParse.setWorker(getPdfWorkerData());
   const parser = new PDFParse({ data: buffer });
   try {
     const result = await parser.getText({ parsePageInfo: true });
