@@ -103,6 +103,17 @@ assert.ok(electricalPartner);
 electricalPartner.approvalStatus = "pending";
 const pendingPartnerPlan = generateDeliveryPlan(partnerTender, pendingPartnerModel);
 assert.equal(pendingPartnerPlan.allocations.some((item) => item.source === "partner" && item.partnerId === "partner-electrical"), false, "unapproved partners must not be allocated as confirmed capacity");
+const unavailablePartnerModel = structuredClone(capabilityBefore.model);
+const unavailableElectricalPartner = unavailablePartnerModel.partners.find((item) => item.id === "partner-electrical");
+assert.ok(unavailableElectricalPartner);
+const unavailableElectricalCapabilities = unavailableElectricalPartner.capabilities;
+assert.ok(unavailableElectricalCapabilities?.length);
+for (const capability of unavailableElectricalCapabilities) {
+  capability.headcount = 0;
+  capability.crewCount = 0;
+}
+const unavailablePartnerPlan = generateDeliveryPlan(partnerTender, unavailablePartnerModel);
+assert.equal(unavailablePartnerPlan.allocations.some((item) => item.source === "partner" && item.partnerId === "partner-electrical"), false, "a partner category must not bypass unavailable detailed capacity");
 const unavailableInternalModel = structuredClone(capabilityBefore.model);
 for (const crew of unavailableInternalModel.crews) crew.availableCrewCount = 0;
 for (const pool of unavailableInternalModel.labourPools) pool.availableHeadcount = 0;

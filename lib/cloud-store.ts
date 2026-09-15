@@ -205,6 +205,20 @@ export async function cloudProcessBulletin(id: string): Promise<void> {
       processing_updated_at: new Date().toISOString()
     }).eq("owner_user_id", userId).eq("file_hash", refreshed.fileHash);
     if (updateError) throw new Error(`Statusi i buletinit nuk u përditësua: ${updateError.message}`);
+
+    // Immediate Vercel processing and the durable worker share the same queue.
+    // Close only queued jobs here; a worker-owned `running` job remains under
+    // the worker's claim and is completed by processing-worker.ts.
+    const jobStatus = refreshed.status === "failed" ? "retryable" : "succeeded";
+    const { error: jobError } = await client.from("bulletin_processing_jobs").update({
+      status: jobStatus,
+      stage: refreshed.status === "failed" ? "failed" : refreshed.processingStage,
+      last_error: refreshed.error ?? null,
+      completed_at: jobStatus === "succeeded" ? new Date().toISOString() : null,
+      next_run_at: jobStatus === "retryable" ? new Date(Date.now() + 5 * 60_000).toISOString() : new Date().toISOString(),
+      result_metadata: { bulletinId: refreshed.id, tenderCount: refreshed.noticeCount }
+    }).eq("owner_user_id", userId).eq("source_fingerprint", refreshed.fileHash).eq("status", "queued");
+    if (jobError) throw new Error(`Radha e procesimit nuk u përditësua: ${jobError.message}`);
   }
 }
 

@@ -46,12 +46,17 @@ function internalFit(seed: PackageSeed, model: CompanyCapabilityModel): { name: 
 function partnerFit(seed: PackageSeed, partner: CapabilityPartner): { score: number; capability: string } | null {
   if (!partner.active || partner.approvalStatus !== "approved") return null;
   const taskText = normalize(`${seed.task} ${seed.requirements.join(" ")}`);
-  const codes = [...(partner.cpvCodes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => capability.cpvCodes)];
-  const terms = [ ...(partner.categories ?? []), ...(partner.workTypes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => [capability.name, capability.category, ...capability.tasks]) ];
+  const activeCapabilities = (partner.capabilities ?? []).filter((item) => item.active);
+  const codes = [...(partner.cpvCodes ?? []), ...activeCapabilities.flatMap((capability) => capability.cpvCodes)];
+  const terms = [ ...(partner.categories ?? []), ...(partner.workTypes ?? []), ...activeCapabilities.flatMap((capability) => [capability.name, capability.category, ...capability.tasks]) ];
   const codeHit = seed.cpv && codes.some((code) => seed.cpv.startsWith(code) || code.startsWith(seed.cpv.slice(0, 4)));
   const termHit = terms.some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText)));
   if (!codeHit && !termHit) return null;
-  const capability = (partner.capabilities ?? []).find((item) => item.active && item.headcount > 0 && item.crewCount > 0 && availableNow(item.availableFrom) && (item.cpvCodes.includes(seed.cpv) || item.tasks.some((task) => taskText.includes(normalize(task)))))?.name ?? partner.categories[0] ?? "Specializim i regjistruar";
+  const matchedCapability = activeCapabilities.find((item) => item.headcount > 0 && item.crewCount > 0 && availableNow(item.availableFrom) && (item.cpvCodes.some((code) => seed.cpv && (seed.cpv.startsWith(code) || code.startsWith(seed.cpv.slice(0, 4)))) || [item.name, item.category, ...item.tasks].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText)))));
+  // Detailed capability records become the source of truth once configured;
+  // a broad legacy category must not bypass an unavailable specialist crew.
+  if (activeCapabilities.length > 0 && !matchedCapability) return null;
+  const capability = matchedCapability?.name ?? partner.categories[0] ?? "Specializim i regjistruar";
   return { score: (codeHit ? 2 : 0) + (termHit ? 1 : 0) + (partner.approvalStatus === "approved" ? 1 : 0), capability };
 }
 
