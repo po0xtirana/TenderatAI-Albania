@@ -8,6 +8,9 @@ const nextConfig = {
   // avoid OneDrive cache collisions with a running dev server.
   distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : process.env.VERCEL ? '.next' : '.next-build',
   serverExternalPackages: ['pdf-parse', 'pdfjs-dist', '@napi-rs/canvas'],
+  outputFileTracingIncludes: {
+    '/api/bulletins/**': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs']
+  },
   experimental: {
     serverActions: { bodySizeLimit: '50mb' }
   }
