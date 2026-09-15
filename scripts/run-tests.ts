@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 process.env.TENDERAT_AI_TEST_MODE = "1";
-import { activateCapabilities, getCapabilities, getSnapshot, getTender, getTenderDeliveryPlan, recordFeedback, updateCapabilitySection, updateTenderWorkflow, updateTenderDeliveryAllocation } from "../lib/store";
+import { activateCapabilities, getCapabilities, getSnapshot, getTender, getTenderDeliveryPlan, recordFeedback, removeBulletin, updateCapabilitySection, updateTenderWorkflow, updateTenderDeliveryAllocation } from "../lib/store";
 import { matchTender } from "../lib/matcher";
 import { normalize } from "../lib/normalize";
 import { calculateReadiness } from "../lib/capabilities";
@@ -131,5 +131,10 @@ const requirementMatch = matchTender(requirementTender, snapshot.company, capabi
 assert.equal(requirementMatch.requirementMatches.some((item) => item.requirementType === "equipment" && item.result === "confirmed"), true);
 assert.equal(requirementMatch.requirementMatches.some((item) => item.requirementType === "personnel" && item.result === "confirmed"), true);
 assert.equal(requirementMatch.capabilityVersion, capabilityBefore.model.activeVersion);
+
+const removedBulletin = removeBulletin(snapshot.bulletins[0].id);
+assert.equal(removedBulletin?.id, snapshot.bulletins[0].id, "bulletin deletion must return the removed bulletin");
+assert.equal(getSnapshot({ period: "all" }).bulletins.length, 0, "bulletin deletion must remove the bulletin from the workspace");
+assert.equal(getSnapshot({ period: "all" }).tenders.length, 0, "bulletin deletion must remove its extracted tenders");
 
 console.log("Tenderat AI Albania tests passed", JSON.stringify({ bulletins: snapshot.bulletins.length, tenders: snapshot.tenders.length, topScore: snapshot.tenders[0]?.match.score }));

@@ -4,7 +4,7 @@ import {
   activateCapabilities, addCapabilityDocument, exportPersistedState, getCapabilities,
   getCapabilityVersions, getSnapshot, getTender, getTenderDeliveryPlan, importPersistedState,
   processBulletin, queueBulletin, recordFeedback, removeCapabilityDocument, updateCapabilitySection,
-  updateCompany, updateTenderDeliveryAllocation, updateTenderWorkflow
+  removeBulletin, updateCompany, updateTenderDeliveryAllocation, updateTenderWorkflow
 } from "./store";
 import type { LocalPersistedState } from "./store";
 import type { AppSnapshot, Bulletin, CapabilityDocument, CapabilityReadiness, CapabilitySectionKey, CapabilityVersion, CompanyCapabilityModel, CompanyCapabilityProfile, TenderRecord, TenderWorkflowStatus } from "./types";
@@ -148,6 +148,26 @@ export async function cloudRequestBulletinProcessing(id: string): Promise<Bullet
   await client.from("bulletins").update({ status: "queued", processing_stage: "queued", last_error: null, processing_updated_at: new Date().toISOString() }).eq("owner_user_id", userId).eq("file_hash", bulletin.fileHash);
   await enqueueProcessingJob(client, userId, id, bulletin.fileHash);
   return bulletin;
+}
+
+export async function cloudRemoveBulletin(id: string): Promise<Bulletin | null> {
+  const { client, userId } = await loadState();
+  const bulletin = getSnapshot().bulletins.find((item) => item.id === id);
+  if (!bulletin) return null;
+  if (["queued", "processing"].includes(bulletin.status)) throw new Error("Prisni që analizimi të përfundojë para se ta hiqni buletinin.");
+
+  // Supabase Storage objects must be removed through the Storage API; deleting
+  // only database metadata would leave the PDF orphaned in the private bucket.
+  const { error: storageError } = await client.storage.from("app-bulletins").remove([bulletinPath(userId, id)]);
+  if (storageError) throw new Error(`PDF-ja nuk u hoq nga cloud: ${storageError.message}`);
+
+  const { error: databaseError } = await client.from("bulletins").delete()
+    .eq("owner_user_id", userId).eq("file_hash", bulletin.fileHash);
+  if (databaseError) throw new Error(`Buletini nuk u hoq nga databaza: ${databaseError.message}`);
+
+  const removed = removeBulletin(id);
+  if (removed) await saveState(client, userId);
+  return removed;
 }
 
 export async function cloudProcessBulletin(id: string): Promise<void> {

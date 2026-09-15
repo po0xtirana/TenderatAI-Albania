@@ -398,6 +398,26 @@ export function requestBulletinProcessing(id: string): Bulletin | null {
   return structuredClone(bulletin);
 }
 
+export function removeBulletin(id: string): Bulletin | null {
+  const store = runtime();
+  const index = store.bulletins.findIndex((item) => item.id === id);
+  if (index < 0) return null;
+  const bulletin = store.bulletins[index];
+  if (["queued", "processing"].includes(bulletin.status)) throw new Error("Prisni që analizimi të përfundojë para se ta hiqni buletinin.");
+  store.bulletins.splice(index, 1);
+  for (const [tenderId, record] of store.tenders) {
+    if (record.tender.bulletinId === id) store.tenders.delete(tenderId);
+  }
+  store.files.delete(id);
+  if (process.env.DATA_BACKEND !== "supabase") {
+    const filePath = path.resolve(dataDirectory, "uploads", `${id}.pdf`);
+    const uploadDirectory = path.resolve(dataDirectory, "uploads") + path.sep;
+    if (filePath.startsWith(uploadDirectory) && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+  persist(store);
+  return structuredClone(bulletin);
+}
+
 export type ProcessBulletinOptions = {
   aiLimit?: number;
   afterDeterministic?: () => Promise<void>;

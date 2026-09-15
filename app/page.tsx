@@ -34,6 +34,7 @@ export default function Home() {
   const [authorityIds, setAuthorityIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [deletingBulletinId, setDeletingBulletinId] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -115,6 +116,20 @@ export default function Home() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Procesimi nuk mund të rinisej."); }
   };
 
+  const deleteBulletin = async (bulletin: Bulletin) => {
+    const confirmed = window.confirm(`Ta hiqni Buletinin Nr. ${bulletin.bulletinNumber}?\n\nDo të fshihen PDF-ja dhe ${bulletin.noticeCount} njoftimet e nxjerra prej tij. Ky veprim nuk mund të zhbëhet.`);
+    if (!confirmed) return;
+    setDeletingBulletinId(bulletin.id); setError(""); setMessage("");
+    try {
+      const response = await fetch(`/api/bulletins/${encodeURIComponent(bulletin.id)}`, { method: "DELETE" });
+      const body = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(body?.error ?? "Buletini nuk mund të hiqej.");
+      setMessage(`Buletini Nr. ${bulletin.bulletinNumber} dhe ${bulletin.noticeCount} njoftimet e tij u hoqën.`);
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Buletini nuk mund të hiqej."); }
+    finally { setDeletingBulletinId(""); }
+  };
+
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">T</span><span><strong>Tenderat</strong><small>AI Albania</small></span></div>
@@ -159,7 +174,7 @@ export default function Home() {
 
       <section className="section-card all-tenders" id="all-tenders"><div className="section-heading tender-heading"><div><p className="eyebrow">ARKIVA E KOMPANISË</p><h2>Tenderat e zbuluar</h2><p className="section-subtitle">Kërkoni në njoftimet e ngarkuara dhe krahasoni periudhat.</p></div><div className="period-tabs" role="tablist">{([["30d", "30 ditë"], ["90d", "3 muaj"], ["all", "Të gjitha"]] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={period === value} className={period === value ? "selected" : ""} onClick={() => setPeriod(value)}>{label}</button>)}</div></div><div className="filters"><label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Kërko sipas objektit, autoritetit ose REF…" aria-label="Kërko tendera" /></label><select value={decision} onChange={(event) => setDecision(event.target.value)} aria-label="Filtro sipas përputhjes"><option value="all">Të gjitha përputhjet</option><option value="high_fit">Përshtatje shumë e lartë</option><option value="good_fit">Përshtatje e mirë</option><option value="review">Për rishikim</option><option value="blocked">Të bllokuara</option></select><AuthorityFilter facets={snapshot.authorityFacets ?? []} selected={authorityIds} onChange={setAuthorityIds} /></div><div className="table-head"><span>TENDERI</span><span>AUTORITETI</span><span>FONDI LIMIT</span><span>AFATI</span><span>PËRPUTHJA</span><span/></div>{loading ? <div className="loading-state">Duke përgatitur arkivin…</div> : snapshot.tenders.map((record) => <TenderTableRow key={record.tender.id} record={record} onFeedback={(relevant) => void saveFeedback(record.tender.id, relevant)} />)}{!loading && !snapshot.tenders.length && <EmptyState />}</section>
 
-      <section className="bottom-grid" id="bulletins"><div className="section-card bulletin-card"><div className="section-heading"><div><p className="eyebrow">HISTORIKU I NGARKIMEVE</p><h2>Buletinet</h2></div><span className="count-badge">{snapshot.bulletins.length}</span></div>{snapshot.bulletins.map((bulletin) => <BulletinRow key={bulletin.id} bulletin={bulletin} onRetry={retryBulletin} />)}</div><div className="section-card privacy-card" id="settings"><span className="privacy-icon">⌁</span><h2>Burim i kontrolluar</h2><p>PDF-të ruhen në hapësirën private të kompanisë. Asnjë informacion nuk dërgohet te APP automatikisht.</p><span className="secure-label">● PRIVATE WORKSPACE</span></div></section>
+      <section className="bottom-grid" id="bulletins"><div className="section-card bulletin-card"><div className="section-heading"><div><p className="eyebrow">HISTORIKU I NGARKIMEVE</p><h2>Buletinet</h2></div><span className="count-badge">{snapshot.bulletins.length}</span></div>{snapshot.bulletins.map((bulletin) => <BulletinRow key={bulletin.id} bulletin={bulletin} onRetry={retryBulletin} onDelete={(item) => void deleteBulletin(item)} deleting={deletingBulletinId === bulletin.id} />)}</div><div className="section-card privacy-card" id="settings"><span className="privacy-icon">⌁</span><h2>Burim i kontrolluar</h2><p>PDF-të ruhen në hapësirën private të kompanisë. Asnjë informacion nuk dërgohet te APP automatikisht.</p><span className="secure-label">● PRIVATE WORKSPACE</span></div></section>
       <footer className="footer"><span>Tenderat AI Albania · hapësirë private</span><span>Burimi: APP · analizë e asistuar · verifikoni gjithmonë dokumentet zyrtare</span></footer>
     </main>
   </div>;
@@ -174,10 +189,11 @@ function TenderTableRow({ record, onFeedback }: { record: TenderRecord; onFeedba
   return <div className="table-row"><Link href={`/tenders/${encodeURIComponent(record.tender.id)}`} className="table-title"><strong>{record.tender.referenceNumber}</strong><span>{record.tender.contractObject}</span></Link><span className="authority-cell">{record.tender.contractingAuthority}</span><span className="amount-cell">{money(record.tender.limitFundAll)}</span><span className="deadline-cell"><b>{dateLabel(record.tender.submissionDeadline)}</b>{remainingDays != null && <small>{remainingDays <= 0 ? "I kaluar" : `${remainingDays} ditë`}</small>}</span><span className="match-cell"><span className={decisionClass(record.match.decision)}>{record.match.score}</span><small>{decisionLabel(record.match.decision)}</small></span><div className="row-actions"><button className={record.relevanceFeedback === true ? "active" : ""} aria-pressed={record.relevanceFeedback === true} onClick={() => onFeedback(true)} title="Shënoje relevant">✓</button><button className={record.relevanceFeedback === false ? "active negative" : ""} aria-pressed={record.relevanceFeedback === false} onClick={() => onFeedback(false)} title="Shënoje jo relevant">×</button></div></div>;
 }
 
-function BulletinRow({ bulletin, onRetry }: { bulletin: Bulletin; onRetry: (id: string) => void }) {
+function BulletinRow({ bulletin, onRetry, onDelete, deleting }: { bulletin: Bulletin; onRetry: (id: string) => void; onDelete: (bulletin: Bulletin) => void; deleting: boolean }) {
   const canRetry = bulletin.status === "failed" || bulletin.status === "needs_review";
+  const canDelete = !["queued", "processing"].includes(bulletin.status);
   const statusLabels: Record<Bulletin["status"], string> = { queued: "Në radhë", processing: "Duke u analizuar", completed: "Përfunduar", needs_review: "Kërkon rishikim", failed: "Dështoi" };
-  return <div className="bulletin-row"><div className="pdf-icon">PDF</div><div className="bulletin-main"><b>Buletini Nr. {bulletin.bulletinNumber}{bulletin.bulletinType === "special" ? " · Posaçëm" : ""}</b><span>{dateLabel(bulletin.publicationDate)} · {bulletin.noticeCount} njoftime · {bulletin.pageCount || "—"} faqe</span>{bulletin.error && <small>{bulletin.error}</small>}</div><span className={`status-dot status-${bulletin.status}`} title={statusLabels[bulletin.status]} /><span className="bulletin-status">{statusLabels[bulletin.status]}</span>{canRetry && <button className="row-retry" type="button" onClick={() => onRetry(bulletin.id)}>Riprovo</button>}</div>;
+  return <div className="bulletin-row"><div className="pdf-icon">PDF</div><div className="bulletin-main"><b>Buletini Nr. {bulletin.bulletinNumber}{bulletin.bulletinType === "special" ? " · Posaçëm" : ""}</b><span>{dateLabel(bulletin.publicationDate)} · {bulletin.noticeCount} njoftime · {bulletin.pageCount || "—"} faqe</span>{bulletin.error && <small>{bulletin.error}</small>}</div><span className={`status-dot status-${bulletin.status}`} title={statusLabels[bulletin.status]} /><span className="bulletin-status">{statusLabels[bulletin.status]}</span>{canRetry && <button className="row-retry" type="button" onClick={() => onRetry(bulletin.id)}>Riprovo</button>}<button className="row-delete" type="button" disabled={!canDelete || deleting} onClick={() => onDelete(bulletin)} aria-label={`Hiq Buletinin Nr. ${bulletin.bulletinNumber}`} title={canDelete ? "Hiq PDF-në dhe njoftimet e këtij buletini" : "Prisni që analizimi të përfundojë"}>{deleting ? "Duke hequr…" : "Hiq"}</button></div>;
 }
 
 function EmptyState() { return <div className="empty-state"><span>◇</span><b>Nuk ka rezultate në këtë pamje.</b><p>Ngarkoni një buletin ose ndryshoni filtrat e kërkimit.</p></div>; }

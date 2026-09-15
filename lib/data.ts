@@ -18,6 +18,7 @@ export const updateWorkflowData = (tenderId: string, status: TenderWorkflowStatu
 export const queueBulletinData = (fileName: string, buffer: Buffer) => useCloud ? cloud.cloudQueueBulletin(fileName, buffer) : Promise.resolve(local.queueBulletin(fileName, buffer));
 export const processBulletinData = (id: string) => useCloud ? cloud.cloudProcessBulletin(id) : local.processBulletin(id);
 export const requestBulletinProcessingData = (id: string) => useCloud ? cloud.cloudRequestBulletinProcessing(id) : Promise.resolve(local.requestBulletinProcessing(id));
+export const removeBulletinData = (id: string) => useCloud ? cloud.cloudRemoveBulletin(id) : Promise.resolve(local.removeBulletin(id));
 export const readBulletinFile = (id: string) => useCloud ? cloud.cloudBulletinFile(id) : Promise.resolve((() => { const buffer = local.getBulletinFile(id); const bulletin = local.getSnapshot().bulletins.find((item) => item.id === id); return buffer && bulletin ? { buffer, fileName: bulletin.fileName } : null; })());
 export const addCapabilityDocumentData = (...args: Parameters<typeof local.addCapabilityDocument>) => useCloud ? cloud.cloudAddCapabilityDocument(...args) : Promise.resolve(local.addCapabilityDocument(...args));
 export const readCapabilityDocument = (id: string) => useCloud ? cloud.cloudCapabilityDocument(id) : Promise.resolve(local.getCapabilityDocument(id));
