@@ -7,12 +7,8 @@ const nextConfig = {
   // Local development and local production builds remain isolated from it to
   // avoid OneDrive cache collisions with a running dev server.
   distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : process.env.VERCEL ? '.next' : '.next-build',
-  // Keep only the native canvas binding external. Bundle pdf-parse/pdfjs so
-  // Next's file tracer carries the PDF worker into each Vercel function.
-  serverExternalPackages: ['@napi-rs/canvas'],
-  outputFileTracingIncludes: {
-    '/api/bulletins/**': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs']
-  },
+  // Required by pdf-parse's official Next.js/Vercel integration.
+  serverExternalPackages: ['pdf-parse'],
   experimental: {
     serverActions: { bodySizeLimit: '50mb' }
   }
