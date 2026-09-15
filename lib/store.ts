@@ -8,10 +8,11 @@ import { hasAiProvider } from "./ai-provider";
 import { matchTender } from "./matcher";
 import { authorityFacets, authorityMatches } from "./authority-catalog";
 import { generateDeliveryPlan, recalculateDeliverySummary, updateAllocation } from "./delivery-plan";
+import { generateDecisionBrief } from "./decision-brief";
 import { calculateReadiness, capabilitySnapshot, capabilityToLegacy, demoCapabilityModel, emptyCapabilityModel } from "./capabilities";
 import type {
   AppSnapshot, Bulletin, CapabilityDocument, CapabilityReadiness, CapabilitySectionKey, CapabilitySnapshot,
-  CapabilityVersion, CompanyCapabilityModel, CompanyCapabilityProfile, TenderMatch, TenderNotice, TenderRecord, TenderWorkflowStatus
+  CapabilityVersion, CompanyCapabilityModel, CompanyCapabilityProfile, TenderActionStatus, TenderDecisionStatus, TenderMatch, TenderNotice, TenderRecord, TenderWorkflowStatus
 } from "./types";
 
 const demoCompany: CompanyCapabilityProfile = {
@@ -310,15 +311,42 @@ export function getSnapshot(options: { period?: "30d" | "90d" | "all"; decision?
 
 export function getTender(id: string): TenderRecord | null {
   const store = runtime(); const record = store.tenders.get(id); if (!record) return null;
-  if (!record.deliveryPlan) { record.deliveryPlan = generateDeliveryPlan(record.tender, activeCapability(store)); persist(store); }
+  let changed = false;
+  if (!record.deliveryPlan) { record.deliveryPlan = generateDeliveryPlan(record.tender, activeCapability(store)); changed = true; }
   else record.deliveryPlan = recalculateDeliverySummary(record.deliveryPlan);
+  const nextBrief = generateDecisionBrief(record, record.decisionBrief);
+  if (!record.decisionBrief) changed = true;
+  record.decisionBrief = nextBrief;
+  if (changed) persist(store);
   return record;
 }
 export function getTenderDeliveryPlan(id: string): TenderRecord["deliveryPlan"] | null { return getTender(id)?.deliveryPlan ?? null; }
+export function getTenderDecisionBrief(id: string) { return getTender(id)?.decisionBrief ?? null; }
 export function updateTenderDeliveryAllocation(tenderId: string, allocationId: string, patch: Record<string, unknown>): TenderRecord | null {
   const store = runtime(); const record = getTender(tenderId); if (!record?.deliveryPlan) return null;
   const next = updateAllocation(record.deliveryPlan, allocationId, patch as Partial<NonNullable<TenderRecord["deliveryPlan"]>["allocations"][number]>);
-  if (!next) return null; record.deliveryPlan = next; persist(store); return record;
+  if (!next) return null; record.deliveryPlan = next; record.decisionBrief = generateDecisionBrief(record, record.decisionBrief); persist(store); return record;
+}
+export function updateTenderAction(tenderId: string, actionId: string, patch: { status?: TenderActionStatus; completionNote?: string; dueDate?: string | null }): TenderRecord | null {
+  const store = runtime(); const record = getTender(tenderId); const brief = record?.decisionBrief;
+  if (!record || !brief) return null;
+  const action = brief.actions.find((item) => item.id === actionId); if (!action) return null;
+  if (patch.status !== undefined) action.status = patch.status;
+  if (patch.completionNote !== undefined) action.completionNote = patch.completionNote.trim().slice(0, 1_000);
+  if (patch.dueDate !== undefined) action.dueDate = patch.dueDate;
+  const issue = action.relatedIssueId ? brief.issues.find((item) => item.id === action.relatedIssueId) : null;
+  if (issue && action.status === "completed") issue.status = "resolved";
+  if (issue && action.status !== "completed" && issue.status === "resolved") issue.status = "open";
+  persist(store); return record;
+}
+export function updateTenderDecision(tenderId: string, status: TenderDecisionStatus, reason: string, acceptedRisks: string[] = []): TenderRecord | null {
+  const store = runtime(); const record = getTender(tenderId); const brief = record?.decisionBrief;
+  if (!record || !brief) return null;
+  brief.decision = { status, reason: reason.trim().slice(0, 2_000), decidedAt: new Date().toISOString(), acceptedRisks: acceptedRisks.map((item) => item.trim()).filter(Boolean).slice(0, 20) };
+  if (status === "continue" || status === "conditional" || status === "submitted") record.workflowStatus = "bid";
+  if (status === "watch") record.workflowStatus = "watching";
+  if (status === "decline") record.workflowStatus = "no_bid";
+  persist(store); return record;
 }
 export function getBulletinFile(id: string): Buffer | null { return runtime().files.get(id) ?? null; }
 export function getCapabilityDocument(id: string): { metadata: CapabilityDocument; buffer: Buffer } | null {
@@ -359,7 +387,7 @@ export function activateCapabilities(): { model: CompanyCapabilityModel; readine
   store.capabilityVersions.push(version);
   store.company = capabilityToLegacy(store.capability);
   const active = activeCapability(store);
-  for (const record of store.tenders.values()) { record.match = applyRelevanceFeedback(matchTender(record.tender, store.company, active), record.relevanceFeedback); record.insights = refreshedInsights(record); record.deliveryPlan = generateDeliveryPlan(record.tender, active); }
+  for (const record of store.tenders.values()) { record.match = applyRelevanceFeedback(matchTender(record.tender, store.company, active), record.relevanceFeedback); record.insights = refreshedInsights(record); record.deliveryPlan = generateDeliveryPlan(record.tender, active); record.decisionBrief = generateDecisionBrief(record, record.decisionBrief); }
   persist(store);
   return { model: structuredClone(store.capability), readiness, version: structuredClone(version) };
 }
@@ -383,6 +411,7 @@ export function recordFeedback(tenderId: string, relevant: boolean): TenderRecor
   const store = runtime(); const record = getTender(tenderId); if (!record) return null;
   record.relevanceFeedback = relevant;
   record.match = applyRelevanceFeedback(matchTender(record.tender, store.company, activeCapability(store)), relevant);
+  record.decisionBrief = generateDecisionBrief(record, record.decisionBrief);
   persist(store); return record;
 }
 export function updateTenderWorkflow(tenderId: string, status: TenderWorkflowStatus): TenderRecord | null {

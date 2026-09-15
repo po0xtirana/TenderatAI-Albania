@@ -1,6 +1,6 @@
 import * as local from "./store";
 import * as cloud from "./cloud-store";
-import type { CapabilitySectionKey, TenderWorkflowStatus } from "./types";
+import type { CapabilitySectionKey, TenderActionStatus, TenderDecisionStatus, TenderWorkflowStatus } from "./types";
 
 const useCloud = process.env.DATA_BACKEND === "supabase";
 
@@ -9,6 +9,8 @@ export const readTender = (id: string) => useCloud ? cloud.cloudTender(id) : Pro
 export const enrichTenderInsightsData = (id: string) => useCloud ? cloud.cloudEnrichTenderInsights(id) : local.enrichTenderInsights(id);
 export const readTenderDeliveryPlan = (id: string) => useCloud ? cloud.cloudDeliveryPlan(id) : Promise.resolve(local.getTenderDeliveryPlan(id));
 export const updateTenderDelivery = (tenderId: string, allocationId: string, patch: Record<string, unknown>) => useCloud ? cloud.cloudUpdateDelivery(tenderId, allocationId, patch) : Promise.resolve(local.updateTenderDeliveryAllocation(tenderId, allocationId, patch));
+export const updateTenderActionData = (tenderId: string, actionId: string, patch: { status?: TenderActionStatus; completionNote?: string; dueDate?: string | null }) => useCloud ? cloud.cloudUpdateTenderAction(tenderId, actionId, patch) : Promise.resolve(local.updateTenderAction(tenderId, actionId, patch));
+export const updateTenderDecisionData = (tenderId: string, status: TenderDecisionStatus, reason: string, acceptedRisks: string[]) => useCloud ? cloud.cloudUpdateTenderDecision(tenderId, status, reason, acceptedRisks) : Promise.resolve(local.updateTenderDecision(tenderId, status, reason, acceptedRisks));
 export const readCapabilities = () => useCloud ? cloud.cloudCapabilities() : Promise.resolve(local.getCapabilities());
 export const readCapabilityVersions = () => useCloud ? cloud.cloudCapabilityVersions() : Promise.resolve(local.getCapabilityVersions());
 export const updateCompanyData = (next: Parameters<typeof local.updateCompany>[0]) => useCloud ? cloud.cloudUpdateCompany(next) : Promise.resolve(local.updateCompany(next));

@@ -213,6 +213,35 @@ export type TenderDeliveryPlan = {
   capabilityVersion: number; summary: { internalPercent: number; partnerPercent: number; rentalCount: number; uncoveredCount: number; provisionalCount: number };
 };
 
+export type TenderRecommendation = "proceed" | "conditional" | "partner_required" | "high_risk" | "do_not_proceed";
+export type TenderSuitability = "strong_fit" | "good_fit" | "review_required" | "weak_fit" | "unsuitable";
+export type EvidenceCompleteness = "complete" | "substantial" | "partial" | "limited";
+export type TenderIssueType = "blocker" | "risk" | "unknown";
+export type TenderIssueSeverity = "critical" | "high" | "medium" | "low";
+export type TenderActionStatus = "todo" | "in_progress" | "waiting" | "completed" | "not_applicable";
+export type TenderDecisionStatus = "continue" | "conditional" | "watch" | "decline" | "submitted";
+
+export type TenderDecisionIssue = {
+  id: string; type: TenderIssueType; severity: TenderIssueSeverity; title: string; description: string;
+  tenderEvidence: Evidence[]; companyEvidence: string[]; resolution: string; status: "open" | "resolved";
+};
+
+export type TenderAction = {
+  id: string; title: string; description: string; priority: "urgent" | "high" | "normal";
+  status: TenderActionStatus; relatedIssueId: string | null; dueDate: string | null; completionNote: string;
+};
+
+export type TenderCompanyDecision = {
+  status: TenderDecisionStatus; reason: string; decidedAt: string; acceptedRisks: string[];
+};
+
+export type TenderDecisionBrief = {
+  tenderId: string; capabilityVersion: number; recommendation: TenderRecommendation; recommendationReason: string;
+  suitability: TenderSuitability; eligibility: TenderEligibility; evidenceCompleteness: EvidenceCompleteness;
+  evidenceCoverage: number; strengths: string[]; issues: TenderDecisionIssue[]; actions: TenderAction[];
+  generatedAt: string; decision: TenderCompanyDecision | null;
+};
+
 export type AuthorityFacet = { id: string; name: string; abbreviation: string | null; parentId: string | null; aliases: string[]; count: number };
-export type TenderRecord = { tender: TenderNotice; bulletin: Bulletin; match: TenderMatch; insights: TenderInsight[]; workflowStatus: TenderWorkflowStatus; deliveryPlan?: TenderDeliveryPlan; relevanceFeedback?: boolean | null };
+export type TenderRecord = { tender: TenderNotice; bulletin: Bulletin; match: TenderMatch; insights: TenderInsight[]; workflowStatus: TenderWorkflowStatus; deliveryPlan?: TenderDeliveryPlan; decisionBrief?: TenderDecisionBrief; relevanceFeedback?: boolean | null };
 export type AppSnapshot = { company: CompanyCapabilityProfile; readiness?: CapabilityReadiness; bulletins: Bulletin[]; tenders: TenderRecord[]; authorityFacets?: AuthorityFacet[] };

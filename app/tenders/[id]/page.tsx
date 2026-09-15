@@ -5,8 +5,11 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import type {
   TenderDeliveryPlan,
+  TenderDecisionBrief,
+  TenderDecisionStatus,
   TenderEligibility,
   TenderRecord,
+  TenderAction,
   TenderWorkAllocation,
   TenderWorkflowStatus,
 } from "@/lib/types";
@@ -62,6 +65,15 @@ const eligibilityLabels: Record<TenderEligibility, string> = {
   eligibility_pending: "Kualifikimi për verifikim",
   not_eligible: "Nuk plotëson kriteret",
 };
+const suitabilityLabels: Record<TenderDecisionBrief["suitability"], string> = {
+  strong_fit: "Përshtatje e fortë", good_fit: "Përshtatje e mirë", review_required: "Kërkon shqyrtim", weak_fit: "Përshtatje e dobët", unsuitable: "E papërshtatshme",
+};
+const evidenceLabels: Record<TenderDecisionBrief["evidenceCompleteness"], string> = {
+  complete: "Prova të plota", substantial: "Prova të mjaftueshme", partial: "Prova të pjesshme", limited: "Prova të kufizuara",
+};
+const recommendationLabels: Record<TenderDecisionBrief["recommendation"], string> = {
+  proceed: "Vazhdo me ofertën", conditional: "Vazhdo pas verifikimeve", partner_required: "Partner ose qira e nevojshme", high_risk: "Rrezik i lartë", do_not_proceed: "Mos vazhdo",
+};
 
 export default function TenderDetailPage() {
   const params = useParams<{ id: string }>();
@@ -73,6 +85,7 @@ export default function TenderDetailPage() {
   const [deliveryPlan, setDeliveryPlan] = useState<TenderDeliveryPlan | null>(
     null,
   );
+  const [decisionBrief, setDecisionBrief] = useState<TenderDecisionBrief | null>(null);
   const [enriching, setEnriching] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -94,6 +107,7 @@ export default function TenderDetailPage() {
         const body = (await response.json()) as TenderRecord;
         setRecord(body);
         setDeliveryPlan(body.deliveryPlan ?? null);
+        setDecisionBrief(body.decisionBrief ?? null);
         setWorkflowStatus(body.workflowStatus ?? "new");
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === "AbortError")
@@ -245,6 +259,7 @@ export default function TenderDetailPage() {
             <span>/100</span>
           </div>
         </section>
+        {decisionBrief && <DecisionBriefSection brief={decisionBrief} tenderId={tender.id} deliveryPlan={deliveryPlan} onChange={setDecisionBrief} />}
         <section className="workflow-bar" aria-label="Gjendja e tenderit">
           <div>
             <span className="eyebrow">HAPI I KOMPANISË</span>
@@ -471,6 +486,75 @@ export default function TenderDetailPage() {
       </main>
     </div>
   );
+}
+
+function DecisionBriefSection({ brief, tenderId, deliveryPlan, onChange }: { brief: TenderDecisionBrief; tenderId: string; deliveryPlan: TenderDeliveryPlan | null; onChange: (brief: TenderDecisionBrief) => void }) {
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function changeAction(action: TenderAction, patch: Partial<Pick<TenderAction, "status" | "completionNote" | "dueDate">>) {
+    setSaving(true); setError("");
+    try {
+      const response = await fetch(`/api/tenders/${encodeURIComponent(tenderId)}/actions/${encodeURIComponent(action.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) });
+      const body = await response.json().catch(() => null) as TenderDecisionBrief & { error?: string } | null;
+      if (!response.ok || !body || "error" in body) throw new Error(body?.error ?? "Veprimi nuk u ruajt.");
+      onChange(body);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Veprimi nuk u ruajt."); }
+    finally { setSaving(false); }
+  }
+  async function saveDecision(status: TenderDecisionStatus, reason: string) {
+    setSaving(true); setError("");
+    try {
+      const response = await fetch(`/api/tenders/${encodeURIComponent(tenderId)}/decision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, reason }) });
+      const body = await response.json().catch(() => null) as TenderDecisionBrief & { error?: string } | null;
+      if (!response.ok || !body || "error" in body) throw new Error(body?.error ?? "Vendimi nuk u ruajt.");
+      onChange(body);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Vendimi nuk u ruajt."); }
+    finally { setSaving(false); }
+  }
+  const openIssues = brief.issues.filter((item) => item.status === "open");
+  return <section className="decision-brief" aria-label="Përmbledhja e vendimit">
+    <div className="decision-brief-head">
+      <div><p className="eyebrow">PËRMBLEDHJE PËR VENDIM</p><h2>{recommendationLabels[brief.recommendation]}</h2><p>{brief.recommendationReason}</p></div>
+      <span className={`recommendation recommendation-${brief.recommendation}`}>{recommendationLabels[brief.recommendation]}</span>
+    </div>
+    <div className="decision-status-grid">
+      <StatusCard title="Përshtatshmëria" value={suitabilityLabels[brief.suitability]} detail="Sa mirë i përshtatet puna kapaciteteve dhe preferencave të kompanisë." tone={brief.suitability} />
+      <StatusCard title="Kualifikimi" value={eligibilityLabels[brief.eligibility]} detail="Nëse kërkesat e identifikuara janë të mbuluara." tone={brief.eligibility} />
+      <StatusCard title="Provë dokumentare" value={`${brief.evidenceCoverage}% · ${evidenceLabels[brief.evidenceCompleteness]}`} detail="Sa nga analiza mbështetet nga dokumenti i ngarkuar." tone={brief.evidenceCompleteness} />
+    </div>
+    <div className="decision-brief-grid">
+      <div className="brief-scope">
+        <p className="eyebrow">1 · ÇFARË PUNE PËRFSHIHET</p>
+        <h3>Fusha e projektit</h3>
+        {deliveryPlan?.workPackages.length ? <div className="brief-phase-list">{deliveryPlan.workPackages.slice(0, 5).map((item) => <div key={item.id}><span>{item.phase}</span><b>{item.task}</b><small>Faqe {item.sourcePage} · {Math.round(item.confidence * 100)}% siguri</small></div>)}</div> : <p className="brief-empty">Fazat e punës do të shfaqen pasi tenderi të analizohet.</p>}
+      </div>
+      <div className="brief-why">
+        <p className="eyebrow">2 · PSE PËRSHTATET</p><h3>Kapacitetet që përputhen</h3>
+        {brief.strengths.length ? <ul>{brief.strengths.map((item) => <li key={item}>✓ {item}</li>)}</ul> : <p className="brief-empty">Nuk ka ende prova të mjaftueshme për një përputhje të fortë.</p>}
+      </div>
+    </div>
+    <div className="delivery-decision-summary">
+      <div><p className="eyebrow">3 · PUNË E BRENDSHME</p><b>{deliveryPlan?.summary.internalPercent ?? 0}%</b><span>e fazave mund të realizohen me kapacitetet e kompanisë.</span></div>
+      <div><p className="eyebrow">4 · PARTNERË DHE QIRA</p><b>{deliveryPlan?.summary.partnerPercent ?? 0}%</b><span>kërkon partnerë · {deliveryPlan?.summary.rentalCount ?? 0} nevoja për qira.</span></div>
+      <div className={(deliveryPlan?.summary.uncoveredCount ?? 0) > 0 ? "uncovered" : ""}><p className="eyebrow">MBULIM I PAKONFIRMUAR</p><b>{deliveryPlan?.summary.uncoveredCount ?? 0}</b><span>faza që kërkojnë zgjidhje para ofertës.</span></div>
+    </div>
+    <div className="brief-workflow-grid">
+      <div className="brief-issues"><div className="brief-section-head"><div><p className="eyebrow">5 · ÇFARË MUND TË NDALOJË PJESËMARRJEN</p><h3>Bllokues, rreziqe dhe të panjohura</h3></div><span>{openIssues.length} të hapura</span></div>{openIssues.length ? <div className="brief-issue-list">{openIssues.slice(0, 6).map((item) => <article className={`brief-issue issue-${item.type}`} key={item.id}><span>{item.type === "blocker" ? "!" : item.type === "risk" ? "△" : "?"}</span><div><b>{item.title}</b><p>{item.description}</p><small>{item.resolution}</small></div></article>)}</div> : <p className="brief-success">✓ Nuk ka bllokues ose rreziqe të hapura në këtë analizë.</p>}</div>
+      <div className="brief-actions"><div className="brief-section-head"><div><p className="eyebrow">6 · HAPI I RADHËS</p><h3>Veprime prioritare</h3></div><span>{brief.actions.filter((item) => item.status !== "completed").length} për t&apos;u bërë</span></div>{brief.actions.length ? <div className="brief-action-list">{brief.actions.slice(0, 5).map((action) => <article className={`brief-action action-${action.priority}`} key={action.id}><div><b>{action.title}</b><p>{action.description}</p></div><select aria-label={`Statusi për ${action.title}`} value={action.status} disabled={saving} onChange={(event) => void changeAction(action, { status: event.target.value as TenderAction["status"] })}><option value="todo">Për t&apos;u bërë</option><option value="in_progress">Në proces</option><option value="waiting">Në pritje</option><option value="completed">Përfunduar</option><option value="not_applicable">Nuk zbatohet</option></select></article>)}</div> : <p className="brief-success">✓ Nuk ka veprime të detyrueshme nga analiza aktuale.</p>}</div>
+    </div>
+    <DecisionControls brief={brief} saving={saving} onSave={saveDecision} />
+    {error && <p className="brief-error" role="alert">{error}</p>}
+  </section>;
+}
+
+function StatusCard({ title, value, detail, tone }: { title: string; value: string; detail: string; tone: string }) {
+  return <article className={`decision-status status-${tone}`}><span>{title}</span><b>{value}</b><p>{detail}</p></article>;
+}
+
+function DecisionControls({ brief, saving, onSave }: { brief: TenderDecisionBrief; saving: boolean; onSave: (status: TenderDecisionStatus, reason: string) => Promise<void> }) {
+  const [reason, setReason] = useState(brief.decision?.reason ?? "");
+  const decisionLabel = brief.decision ? `Vendimi i ruajtur: ${brief.decision.status === "continue" ? "Vazhdo" : brief.decision.status === "conditional" ? "Vazhdo me kushte" : brief.decision.status === "watch" ? "Në ndjekje" : brief.decision.status === "submitted" ? "Ofertë e dorëzuar" : "Mos vazhdo"}` : "Regjistro vendimin e kompanisë";
+  return <div className="decision-controls"><div><p className="eyebrow">VENDIMI I KOMPANISË</p><b>{decisionLabel}</b><textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Shënim i shkurtër për vendimin, kushtet ose rreziqet e pranuara…" aria-label="Arsyeja e vendimit" /></div><div className="decision-buttons"><button type="button" className="secondary-button" disabled={saving} onClick={() => void onSave("watch", reason)}>Në ndjekje</button><button type="button" className="secondary-button" disabled={saving} onClick={() => void onSave("decline", reason)}>Mos vazhdo</button><button type="button" className="secondary-button" disabled={saving} onClick={() => void onSave("conditional", reason)}>Vazhdo me kushte</button><button type="button" className="primary-button" disabled={saving} onClick={() => void onSave("continue", reason)}>{saving ? "Duke ruajtur…" : "Vazhdo me ofertën"}</button></div></div>;
 }
 
 const sourceLabels: Record<TenderWorkAllocation["source"], string> = {
