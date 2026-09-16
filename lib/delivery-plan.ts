@@ -74,9 +74,12 @@ function allocation(workPackageId: string, source: TenderWorkAllocation["source"
 }
 
 export function recalculateDeliverySummary(plan: TenderDeliveryPlan): TenderDeliveryPlan {
-  const packageIds = [...new Set(plan.workPackages.map((item) => item.id))];
+  const workPackages = plan.workPackages.map((item) => item.verificationStatus === "provisional" && ["bulletin", "document"].includes(item.source) && item.confidence >= 0.7
+    ? { ...item, verificationStatus: "extracted" as const }
+    : item);
+  const packageIds = [...new Set(workPackages.map((item) => item.id))];
   const packageCoverage = (sources: TenderWorkAllocation["source"][]) => packageIds.length ? packageIds.reduce((sum, workPackageId) => sum + plan.allocations.filter((item) => item.workPackageId === workPackageId && sources.includes(item.source)).reduce((packageSum, item) => packageSum + item.sharePercent, 0), 0) / packageIds.length : 0;
-  return { ...plan, summary: { ...plan.summary, internalPercent: Math.round(packageCoverage(["internal", "hybrid"])), partnerPercent: Math.round(packageCoverage(["partner"])), rentalCount: plan.allocations.filter((item) => item.source === "rental").length, uncoveredCount: plan.allocations.filter((item) => item.source === "uncovered").length, provisionalCount: plan.workPackages.filter((item) => item.verificationStatus === "provisional").length } };
+  return { ...plan, workPackages, summary: { ...plan.summary, internalPercent: Math.round(packageCoverage(["internal", "hybrid"])), partnerPercent: Math.round(packageCoverage(["partner"])), rentalCount: plan.allocations.filter((item) => item.source === "rental").length, uncoveredCount: plan.allocations.filter((item) => item.source === "uncovered").length, provisionalCount: workPackages.filter((item) => item.verificationStatus === "provisional").length } };
 }
 
 export function generateDeliveryPlan(tender: TenderNotice, model: CompanyCapabilityModel): TenderDeliveryPlan {
