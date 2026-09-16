@@ -203,6 +203,10 @@ export default function TenderDetailPage() {
       </div>
     );
   const { tender, match, insights, bulletin } = record;
+  const scopeCriterion = match.criterionResults?.find(
+    (criterion) => criterion.key === "scope",
+  );
+  const scoreUnavailable = scopeCriterion?.applicability === "unknown";
   return (
     <div className="detail-page">
       <header className="detail-top">
@@ -257,65 +261,37 @@ export default function TenderDetailPage() {
             </p>
           </div>
           <div className="big-score">
-            <small>PËRPUTHJA</small>
-            <strong>{match.score}</strong>
-            <span>/100</span>
-            <small className="score-confidence">SIGURIA {match.confidenceScore ?? match.evidenceCoverage}%</small>
+            <small>{scoreUnavailable ? "STATUSI" : "PËRPUTHJA"}</small>
+            {scoreUnavailable ? (
+              <strong className="score-pending">Pa vlerësim</strong>
+            ) : (
+              <>
+                <strong>{match.score}</strong>
+                <span>/100</span>
+              </>
+            )}
+            <small className="score-confidence">
+              SIGURIA {match.confidenceScore ?? match.evidenceCoverage}%
+            </small>
           </div>
         </section>
-        {decisionBrief && <DecisionBriefSection brief={decisionBrief} tenderId={tender.id} deliveryPlan={deliveryPlan} onChange={setDecisionBrief} />}
-        <section className="workflow-bar" aria-label="Gjendja e tenderit">
-          <div>
-            <span className="eyebrow">HAPI I KOMPANISË</span>
-            <strong>{workflowLabels[workflowStatus]}</strong>
-          </div>
-          <div className="workflow-actions">
-            {(
-              [
-                "watching",
-                "reviewing",
-                "bid",
-                "no_bid",
-              ] as TenderWorkflowStatus[]
-            ).map((status) => (
-              <button
-                key={status}
-                type="button"
-                className={workflowStatus === status ? "active" : ""}
-                disabled={savingStatus}
-                onClick={() => void saveWorkflow(status)}
-              >
-                {workflowLabels[status]}
-              </button>
-            ))}
-          </div>
-        </section>
-        <section className="eligibility-panel">
-          <div>
-            <span className="eyebrow">STATUSI I KUALIFIKIMIT</span>
-            <b>{eligibilityLabels[match.eligibility]}</b>
-            <p>{match.eligibilityReason}</p>
-          </div>
-          <div>
-            <span className="eyebrow">SIGURIA E VLERËSIMIT</span>
-            <b>{match.confidenceScore ?? match.evidenceCoverage}%</b>
-            <p>Mat sa prova të tenderit dhe kompanisë mbështesin rezultatin; mungesa e të dhënave nuk llogaritet si dështim.</p>
-          </div>
-          <div>
-            <span className="eyebrow">INTERVALI I MUNDSHËM</span>
-            <b>{match.fitRangeLow ?? match.score}–{match.fitRangeHigh ?? match.score}</b>
-            <p>Tregon sa mund të ndryshojë përshtatja pasi të verifikohen kriteret që mungojnë.</p>
-          </div>
-        </section>
-        {deliveryPlan && (
-          <DeliveryPlanSection
-            plan={deliveryPlan}
-            onPlanChange={setDeliveryPlan}
-            tenderId={tender.id}
-          />
-        )}
-        <div className="detail-grid">
-          <div>
+        <div className="tender-workspace">
+          <div className="tender-workspace-main">
+            {decisionBrief && (
+              <DecisionBriefSection
+                brief={decisionBrief}
+                tenderId={tender.id}
+                deliveryPlan={deliveryPlan}
+                onChange={setDecisionBrief}
+              />
+            )}
+            {deliveryPlan && (
+              <DeliveryPlanSection
+                plan={deliveryPlan}
+                onPlanChange={setDeliveryPlan}
+                tenderId={tender.id}
+              />
+            )}
             <section className="detail-card">
               <div className="detail-card-heading">
                 <div>
@@ -438,7 +414,52 @@ export default function TenderDetailPage() {
               </div>
             </section>
           </div>
-          <aside className="detail-side">
+          <aside className="detail-side detail-side-sticky">
+            <section className="detail-card tender-status-card">
+              <div className="side-card-heading">
+                <div>
+                  <p className="eyebrow">STATUSI I PUNËS</p>
+                  <h2>{workflowLabels[workflowStatus]}</h2>
+                </div>
+                <span className="status-live-dot" aria-hidden="true" />
+              </div>
+              <div className="workflow-actions workflow-actions-vertical" aria-label="Gjendja e tenderit">
+                {(
+                  ["watching", "reviewing", "bid", "no_bid"] as TenderWorkflowStatus[]
+                ).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    className={workflowStatus === status ? "active" : ""}
+                    disabled={savingStatus}
+                    onClick={() => void saveWorkflow(status)}
+                  >
+                    <span>{workflowLabels[status]}</span>
+                    <b>{workflowStatus === status ? "Aktiv" : "Zgjidh"}</b>
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="detail-card analysis-health-card">
+              <div className="side-card-heading">
+                <div>
+                  <p className="eyebrow">CILËSIA E ANALIZËS</p>
+                  <h2>Sa mund t&apos;i besojmë?</h2>
+                </div>
+              </div>
+              <div className="analysis-health-row">
+                <span>Siguria</span>
+                <b>{match.confidenceScore ?? match.evidenceCoverage}%</b>
+              </div>
+              <div className="analysis-meter" aria-hidden="true">
+                <i style={{ width: `${match.confidenceScore ?? match.evidenceCoverage}%` }} />
+              </div>
+              <div className="analysis-health-row">
+                <span>Intervali i përshtatjes</span>
+                <b>{match.fitRangeLow ?? match.score}–{match.fitRangeHigh ?? match.score}</b>
+              </div>
+              <p>{match.eligibilityReason}</p>
+            </section>
             <section className="detail-card facts-card">
               <div className="detail-card-heading">
                 <div>

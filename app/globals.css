@@ -218,6 +218,151 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .decision-brief-head,.decision-controls { display: block; padding: 21px 18px; }.recommendation { display: inline-block; margin-top: 13px; }.decision-status-grid,.decision-brief-grid,.brief-workflow-grid,.delivery-decision-summary { grid-template-columns: 1fr; }.decision-status,.brief-scope,.brief-why,.brief-issues,.brief-actions,.delivery-decision-summary > div { padding: 18px; }.brief-phase-list > div { grid-template-columns: 1fr; }.brief-phase-list small { grid-column: auto; }.decision-buttons { justify-content: flex-start; max-width: none; margin-top: 14px; }
 }
 
+/* Tender detail — decision workspace */
+.detail-page { min-width: 0; color: #17324d; background: #f3f6fa; }
+.detail-main { width: min(100%, 1440px); max-width: none; padding: 28px 32px 72px; }
+.detail-crumb { margin: 0 2px; color: #718298; }
+.detail-hero { min-height: 214px; margin: 14px 0 22px; padding: 30px 34px; overflow: hidden; }
+.detail-title { flex: 1; }
+.detail-title h1 { max-width: 960px; margin-top: 16px; font-size: clamp(28px, 2.7vw, 40px); line-height: 1.12; overflow-wrap: anywhere; }
+.detail-title > p { max-width: 920px; line-height: 1.55; overflow-wrap: anywhere; }
+.detail-hero .tag-row { gap: 7px; }
+.detail-hero .tag,.detail-hero .pill,.detail-hero .eligibility-tag { min-height: 24px; align-items: center; padding: 5px 9px; }
+.big-score { flex: 0 0 145px; padding-left: 26px; border-left: 1px solid rgba(255,255,255,.14); }
+.big-score strong { font-size: 60px; }
+.big-score .score-pending { max-width: 132px; margin: 9px 0 2px auto; color: #f5c978; font-size: 20px; line-height: 1.05; letter-spacing: -.4px; }
+
+.tender-workspace { display: grid; grid-template-columns: minmax(0,1fr) 332px; gap: 20px; align-items: start; }
+.tender-workspace-main,.detail-side { min-width: 0; }
+.detail-side-sticky { position: sticky; top: 90px; display: grid; gap: 16px; }
+.detail-side-sticky .detail-card { margin: 0; }
+.detail-card { border-color: #d9e2ec; border-radius: 16px; box-shadow: 0 8px 24px rgba(16,39,66,.055); }
+.detail-card-heading { align-items: center; padding: 24px 26px 18px; }
+.detail-card-heading > div { min-width: 0; }
+.detail-card-heading h2 { font-size: 20px; letter-spacing: -.25px; }
+.detail-card-copy { max-width: 660px; color: #687c91; font-size: 11px; }
+.side-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 21px 21px 16px; }
+.side-card-heading h2 { margin: 3px 0 0; color: #1b3650; font: 650 17px/1.2 'Space Grotesk',sans-serif; }
+.status-live-dot { width: 9px; height: 9px; margin-top: 8px; border-radius: 50%; background: #35bca4; box-shadow: 0 0 0 5px rgba(53,188,164,.12); }
+
+.decision-brief { margin-bottom: 20px; border-radius: 16px; box-shadow: 0 10px 32px rgba(16,39,66,.07); }
+.decision-brief-head { padding: 25px 27px; background: radial-gradient(circle at 100% 0,rgba(52,193,171,.15),transparent 21rem),linear-gradient(125deg,#f5f8ff,#f5fbfa); }
+.decision-brief-head > div { min-width: 0; }
+.decision-brief-head h2 { font-size: 26px; }
+.decision-brief-head p:not(.eyebrow) { font-size: 11px; line-height: 1.55; }
+.recommendation { max-width: 200px; white-space: normal; }
+.decision-status-grid { background: #dfe6ee; }
+.decision-status { min-height: 112px; padding: 18px 20px; }
+.decision-status b { overflow-wrap: anywhere; }
+.decision-brief-grid,.brief-workflow-grid { background: #e0e7ee; }
+.brief-scope,.brief-why,.brief-issues,.brief-actions { padding: 22px 23px; }
+.brief-phase-list > div { grid-template-columns: 128px minmax(0,1fr); min-height: 58px; padding: 10px 12px; }
+.brief-phase-list b,.brief-phase-list small,.brief-why li { overflow-wrap: anywhere; }
+.delivery-decision-summary > div { min-height: 108px; padding: 18px 22px; }
+.brief-issue,.brief-action { min-width: 0; }
+.brief-issue p,.brief-issue small,.brief-action p { overflow-wrap: anywhere; }
+.brief-action { align-items: flex-start; }
+.brief-action select { min-width: 112px; max-width: 122px; }
+.decision-controls { align-items: flex-start; padding: 21px 23px; }
+.decision-buttons { padding-top: 21px; }
+
+.workflow-actions-vertical { display: grid; gap: 7px; padding: 0 14px 16px; }
+.workflow-actions-vertical button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 38px; border-color: #dde5ed; border-radius: 9px; padding: 8px 10px; text-align: left; }
+.workflow-actions-vertical button b { color: #93a0ae; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .55px; }
+.workflow-actions-vertical button.active b { color: #217b6f; }
+.analysis-health-card { padding-bottom: 18px; }
+.analysis-health-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 21px; padding: 10px 0 7px; border-top: 1px solid #edf1f5; }
+.analysis-health-row span { color: #718398; font-size: 10px; }
+.analysis-health-row b { color: #233f59; font: 650 15px 'Space Grotesk',sans-serif; }
+.analysis-meter { height: 6px; margin: 0 21px 5px; overflow: hidden; border-radius: 999px; background: #e9eef3; }
+.analysis-meter i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#3768e8,#37b9a3); }
+.analysis-health-card > p { margin: 4px 21px 0; color: #6e8195; font-size: 10px; line-height: 1.5; }
+
+.facts-card { padding-bottom: 13px; }
+.facts-card .detail-card-heading { padding: 21px 21px 12px; }
+.fact { align-items: flex-start; gap: 13px; margin-inline: 21px; padding: 12px 0; }
+.fact span { flex: 0 0 94px; }
+.fact b { max-width: none; min-width: 0; text-align: right; line-height: 1.45; overflow-wrap: anywhere; }
+.source-card { padding: 21px; }
+.source-file > div { min-width: 0; }
+.source-file b { max-width: 230px; }
+
+.tender-workspace-main > .detail-card { margin-bottom: 20px; }
+.components { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 0 24px 18px; }
+.component { min-width: 0; margin: 0; padding: 13px 14px; border: 1px solid #e1e7ee; border-radius: 10px; background: #fafbfd; }
+.component > div:first-child { gap: 10px; }
+.component > div:first-child span { min-width: 0; overflow-wrap: anywhere; }
+.component > div:first-child b { flex: 0 0 auto; }
+.component-meta { min-height: 39px; overflow-wrap: anywhere; }
+.reason-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 20px; margin: 0 24px 20px; }
+.capability-proof,.blocker-box { margin-inline: 24px; }
+.insight-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1px; background: #e5eaf0; }
+.detail-insight { min-width: 0; border: 0; background: #fff; }
+.detail-insight > p,.evidence q { overflow-wrap: anywhere; }
+.evidence q { max-height: 92px; overflow: auto; }
+
+.delivery-plan-card { margin: 0 0 20px; }
+.delivery-summary { gap: 8px; margin: 0; padding: 0 25px 18px; }
+.delivery-summary span { min-width: 105px; padding: 9px 11px; }
+.delivery-phases { gap: 18px; padding: 0 25px 25px; }
+.delivery-phase { padding-top: 17px; }
+.delivery-phase h3 { font-size: 15px; }
+.delivery-package { padding: 15px; border-radius: 11px; background: #fbfcfe; }
+.delivery-package-head > div { min-width: 0; }
+.delivery-package-head b { color: #263f58; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.delivery-package-head small { line-height: 1.45; }
+.delivery-allocation { padding: 10px 11px; }
+.allocation-main { line-height: 1.4; }
+.allocation-main > span:not(.allocation-dot) { min-width: 0; overflow-wrap: anywhere; }
+.allocation-controls { justify-content: flex-end; }
+.allocation-rationale { font-size: 9px; overflow-wrap: anywhere; }
+.delivery-evidence { align-items: flex-start; line-height: 1.45; }
+.delivery-evidence span { flex: 0 0 auto; }
+.delivery-evidence q { min-width: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 1120px) {
+  .detail-main { padding-inline: 22px; }
+  .tender-workspace { grid-template-columns: minmax(0,1fr) 300px; }
+  .brief-workflow-grid { grid-template-columns: 1fr; }
+  .detail-side-sticky { top: 82px; }
+}
+
+@media (max-width: 900px) {
+  .tender-workspace { grid-template-columns: 1fr; }
+  .detail-side-sticky { position: static; grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .tender-status-card,.source-card { grid-column: auto; }
+  .facts-card { grid-row: span 2; }
+}
+
+@media (max-width: 700px) {
+  .detail-top { height: 62px; padding-inline: 15px; }
+  .detail-context { display: none; }
+  .detail-main { padding: 20px 13px 52px; }
+  .detail-hero { min-height: 0; padding: 22px 19px; }
+  .detail-title h1 { font-size: 26px; }
+  .big-score { padding: 18px 0 0; border-top: 1px solid rgba(255,255,255,.14); border-left: 0; text-align: left; }
+  .big-score .score-pending { margin-left: 0; }
+  .detail-side-sticky { display: grid; grid-template-columns: 1fr; }
+  .facts-card { grid-row: auto; }
+  .decision-status-grid,.decision-brief-grid,.brief-workflow-grid,.delivery-decision-summary { grid-template-columns: 1fr; }
+  .components,.reason-list,.insight-list { grid-template-columns: 1fr; }
+  .components { padding-inline: 16px; }
+  .reason-list,.capability-proof,.blocker-box { margin-inline: 16px; }
+  .detail-card-heading,.decision-brief-head,.brief-scope,.brief-why,.brief-issues,.brief-actions,.decision-controls { padding-inline: 17px; }
+  .decision-brief-head { display: block; }
+  .recommendation { display: inline-block; margin-top: 13px; }
+  .brief-phase-list > div { grid-template-columns: 1fr; }
+  .brief-phase-list small { grid-column: auto; }
+  .decision-controls { display: block; }
+  .decision-buttons { justify-content: flex-start; max-width: none; padding-top: 0; margin-top: 14px; }
+  .delivery-summary,.delivery-phases { padding-inline: 16px; }
+  .delivery-package-head,.delivery-evidence { display: block; }
+  .delivery-verification { display: inline-block; margin-top: 8px; }
+  .delivery-evidence q { display: block; margin-top: 5px; }
+  .allocation-controls { justify-content: flex-start; flex-wrap: wrap; }
+  .allocation-controls select { flex: 1; min-width: 150px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
