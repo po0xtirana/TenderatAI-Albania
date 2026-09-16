@@ -8,6 +8,11 @@ import { suggestCpvSpecializations } from "../lib/cpv-catalog";
 import { authorityId } from "../lib/authority-catalog";
 import { generateDeliveryPlan } from "../lib/delivery-plan";
 import { parseDate, parseFund, parseNotice, segmentContractNotices } from "../lib/parse-bulletin";
+import { safeNextPath } from "../lib/access-gate";
+
+assert.equal(safeNextPath("/capabilities?step=people"), "/capabilities?step=people");
+assert.equal(safeNextPath("//malicious.example"), "/", "the access gate must reject protocol-relative redirects");
+assert.equal(safeNextPath("/access?next=/"), "/", "the access gate must not redirect back to itself");
 
 const snapshot = getSnapshot({ period: "all" });
 assert.equal(snapshot.bulletins[0]?.bulletinNumber, "54");
