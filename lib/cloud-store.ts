@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ensureCompanyWorkspaceId, getSupabaseServerClient } from "./supabase-server";
 import {
   activateCapabilities, addCapabilityDocument, exportPersistedState, getCapabilities,
@@ -103,10 +103,11 @@ export async function cloudQueueBulletin(fileName: string, buffer: Buffer): Prom
   const path = bulletinPath(userId, bulletinId);
   const { error: uploadError } = await client.storage.from("app-bulletins").upload(path, buffer, { upsert: true, contentType: "application/pdf", cacheControl: "3600" });
   if (uploadError) throw new Error(`PDF-ja nuk u ruajt në cloud: ${uploadError.message}`);
+  const shouldProcess = !existing || ["failed", "needs_review"].includes(existing.status);
   const bulletin = queueBulletin(fileName, buffer, { autoProcess: false });
   await upsertCloudBulletin(client, userId, bulletin);
   await saveState(client, userId);
-  await enqueueProcessingJob(client, userId, bulletin.id, bulletin.fileHash);
+  if (shouldProcess) await enqueueProcessingJob(client, userId, bulletin.id, bulletin.fileHash);
   return bulletin;
 }
 
@@ -156,6 +157,11 @@ export async function cloudRequestBulletinProcessing(id: string): Promise<Bullet
   const { client, userId } = await loadState();
   const bulletin = getSnapshot().bulletins.find((item) => item.id === id);
   if (!bulletin) return null;
+  if (!["failed", "needs_review"].includes(bulletin.status)) {
+    throw new Error(bulletin.status === "processing" || bulletin.status === "queued"
+      ? "Ky buletin është tashmë në procesim."
+      : "Ky buletin është përpunuar. Riprovimi përdoret vetëm pas një dështimi ose kontrolli manual.");
+  }
   bulletin.status = "queued";
   bulletin.processingStage = "queued";
   bulletin.error = null;
@@ -227,6 +233,67 @@ export async function cloudProcessBulletin(id: string): Promise<void> {
       result_metadata: { bulletinId: refreshed.id, tenderCount: refreshed.noticeCount }
     }).eq("owner_user_id", userId).eq("source_fingerprint", refreshed.fileHash).eq("status", "queued");
     if (jobError) throw new Error(`Radha e procesimit nuk u përditësua: ${jobError.message}`);
+  }
+}
+
+/**
+ * Claims the durable queue row before Vercel's `after()` starts processing.
+ * The standalone worker uses the same conditional claim, so exactly one of
+ * them can process a bulletin and duplicate AI calls cannot race each other.
+ */
+export async function cloudProcessQueuedBulletin(id: string): Promise<boolean> {
+  const { client, userId } = await loadState();
+  const bulletin = getSnapshot().bulletins.find((item) => item.id === id);
+  if (!bulletin) return false;
+  const { data: jobs, error: readError } = await client.from("bulletin_processing_jobs")
+    .select("id, attempt_count")
+    .eq("owner_user_id", userId)
+    .eq("source_fingerprint", bulletin.fileHash)
+    .in("status", ["queued", "retryable"])
+    .order("created_at", { ascending: true })
+    .limit(1);
+  if (readError) throw new Error(`Radha e procesimit nuk u lexua: ${readError.message}`);
+  const job = jobs?.[0] as { id: string; attempt_count: number } | undefined;
+  if (!job) return false;
+  const lockId = `vercel-after-${randomUUID().slice(0, 8)}`;
+  const { data: claimed, error: claimError } = await client.from("bulletin_processing_jobs")
+    .update({
+      status: "running", stage: "extracting", attempt_count: Number(job.attempt_count) + 1,
+      locked_at: new Date().toISOString(), locked_by: lockId, last_error: null, started_at: new Date().toISOString()
+    })
+    .eq("id", job.id)
+    .eq("owner_user_id", userId)
+    .in("status", ["queued", "retryable"])
+    .select("id, attempt_count")
+    .maybeSingle();
+  if (claimError) throw new Error(`Radha e procesimit nuk u rezervua: ${claimError.message}`);
+  if (!claimed) return false;
+  try {
+    await cloudProcessBulletin(id);
+    const refreshed = (await cloudSnapshot()).bulletins.find((item) => item.id === id);
+    const failed = refreshed?.status === "failed";
+    const attempts = Number(claimed.attempt_count ?? 1);
+    const finalStatus = failed ? (attempts >= 3 ? "failed" : "retryable") : "succeeded";
+    const { error: finishError } = await client.from("bulletin_processing_jobs").update({
+      status: finalStatus,
+      stage: failed ? "failed" : refreshed?.processingStage ?? "completed",
+      last_error: failed ? refreshed?.error ?? "Procesimi i PDF-së dështoi." : null,
+      next_run_at: finalStatus === "retryable" ? new Date(Date.now() + Math.min(60, 2 ** Math.max(0, attempts - 1)) * 60_000).toISOString() : new Date().toISOString(),
+      locked_at: null, locked_by: null,
+      completed_at: finalStatus === "succeeded" || finalStatus === "failed" ? new Date().toISOString() : null,
+      result_metadata: { bulletinId: id, tenderCount: refreshed?.noticeCount ?? 0 }
+    }).eq("id", job.id).eq("owner_user_id", userId).eq("locked_by", lockId);
+    if (finishError) throw new Error(`Radha e procesimit nuk u mbyll: ${finishError.message}`);
+    return true;
+  } catch (error) {
+    const attempts = Number(claimed.attempt_count ?? 1);
+    const finalStatus = attempts >= 3 ? "failed" : "retryable";
+    await client.from("bulletin_processing_jobs").update({
+      status: finalStatus, stage: "failed", last_error: error instanceof Error ? error.message : String(error),
+      next_run_at: finalStatus === "retryable" ? new Date(Date.now() + Math.min(60, 2 ** Math.max(0, attempts - 1)) * 60_000).toISOString() : new Date().toISOString(),
+      locked_at: null, locked_by: null, completed_at: finalStatus === "failed" ? new Date().toISOString() : null
+    }).eq("id", job.id).eq("owner_user_id", userId).eq("locked_by", lockId);
+    throw error;
   }
 }
 

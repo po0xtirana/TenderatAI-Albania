@@ -125,6 +125,20 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
     return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current); };
   }, [model]);
 
+  useEffect(() => {
+    const flushBeforeLeave = () => {
+      if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null; }
+      for (const section of dirtySections(modelRef.current)) void persistSection(section, modelRef.current);
+    };
+    const flushWhenHidden = () => { if (document.visibilityState === "hidden") flushBeforeLeave(); };
+    window.addEventListener("pagehide", flushBeforeLeave);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", flushBeforeLeave);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+    };
+  }, []);
+
   async function saveSection(continueNext = false) {
     setSaving(true); setError(""); setMessage("");
     try {
@@ -161,7 +175,7 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
         <div><p className="eyebrow">PROFILI QË UDHËHEQ ÇDO REKOMANDIM</p><h1>Kapacitetet e kompanisë</h1><p>Dokumentoni çfarë mund të realizojë kompania, me cilët njerëz, pajisje dhe kufij. Tenderat AI përdor vetëm versionin që aktivizoni.</p></div>
         <div className="readiness-panel">
           <div className="readiness-dial" style={{ "--readiness": `${readiness.overallScore}%` } as React.CSSProperties}><strong>{readiness.overallScore}%</strong><span>gatishmëri</span></div>
-          <div><b>{readiness.readyForMatching ? "Gati për aktivizim" : `${readiness.blockingItems.length + readiness.expiredItems.length} bllokues për t’u zgjidhur`}</b><p>{readiness.warningItems.length} paralajmërime · {readiness.staleItems.length} të dhëna të vjetra</p></div>
+          <div><b>{readiness.readyForMatching ? "Gati për aktivizim" : `${readiness.blockingItems.length} bllokues për t’u zgjidhur`}</b><p>{readiness.warningItems.length} paralajmërime · {readiness.expiredItems.length} dokumente të skaduara · {readiness.staleItems.length} të dhëna të vjetra</p></div>
         </div>
       </section>
 

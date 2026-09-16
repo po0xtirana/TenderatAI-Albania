@@ -16,6 +16,15 @@ function configuration() {
 
 async function claimNext() {
   const { client, ownerId } = configuration();
+  const staleBefore = new Date(Date.now() - 15 * 60_000).toISOString();
+  const { error: staleRetryError } = await client.from("bulletin_processing_jobs")
+    .update({ status: "retryable", stage: "queued", locked_at: null, locked_by: null, next_run_at: new Date().toISOString(), last_error: "Procesimi i mëparshëm u ndërpre dhe u rikthye automatikisht në radhë." })
+    .eq("owner_user_id", ownerId).eq("status", "running").lt("attempt_count", 3).lt("locked_at", staleBefore);
+  if (staleRetryError) throw new Error(`Worker stale-job recovery: ${staleRetryError.message}`);
+  const { error: staleFailError } = await client.from("bulletin_processing_jobs")
+    .update({ status: "failed", stage: "failed", locked_at: null, locked_by: null, completed_at: new Date().toISOString(), last_error: "Procesimi u ndërpre tri herë dhe kërkon riprovim manual." })
+    .eq("owner_user_id", ownerId).eq("status", "running").gte("attempt_count", 3).lt("locked_at", staleBefore);
+  if (staleFailError) throw new Error(`Worker stale-job finalization: ${staleFailError.message}`);
   const { data: jobs, error } = await client.from("bulletin_processing_jobs")
     .select("id, bulletin_id, source_fingerprint, attempt_count")
     .eq("owner_user_id", ownerId)

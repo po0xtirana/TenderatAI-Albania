@@ -1,5 +1,5 @@
 import { after, NextResponse } from "next/server";
-import { processBulletinData, queueBulletinData } from "@/lib/data";
+import { processQueuedBulletinData, queueBulletinData } from "@/lib/data";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   if (pdfHeader < 0 || pdfHeader > 1024) return NextResponse.json({ error: "Skedari nuk ka një strukturë PDF të vlefshme." }, { status: 415 });
   const bulletin = await queueBulletinData(file.name, buffer);
   after(async () => {
-    try { await processBulletinData(bulletin.id); }
+    try { await processQueuedBulletinData(bulletin.id); }
     catch (processingError) { console.error("[bulletin-processing] background processing failed", processingError); }
   });
   return NextResponse.json({ bulletin }, { status: 202 });

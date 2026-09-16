@@ -83,7 +83,7 @@ export function generateDeliveryPlan(tender: TenderNotice, model: CompanyCapabil
   const seeds = packageSeeds(tender);
   const workPackages: TenderWorkPackage[] = seeds.map((seed, index) => ({
     id: `${tender.id}-work-${index + 1}`, phase: seed.phase, task: seed.task, quantity: null, unit: null, requirements: seed.requirements,
-    source: seed.confidence >= 0.7 ? "bulletin" : "inference", sourcePage: tender.sourcePages.start, evidenceText: tender.contractObject || tender.sourceText.slice(0, 220), confidence: Math.min(seed.confidence, tender.extractionConfidence), verificationStatus: seed.confidence >= 0.7 ? "provisional" : "provisional"
+    source: seed.confidence >= 0.7 ? "bulletin" : "inference", sourcePage: tender.sourcePages.start, evidenceText: tender.contractObject || tender.sourceText.slice(0, 220), confidence: Math.min(seed.confidence, tender.extractionConfidence), verificationStatus: seed.confidence >= 0.7 ? "extracted" : "provisional"
   }));
   const allocations: TenderWorkAllocation[] = [];
   for (const [index, workPackage] of workPackages.entries()) {

@@ -118,6 +118,22 @@ export function parseNotice(segment: string, pages: { start: number; end: number
   };
 }
 
+function continuationBeforeNoticeHeader(value: string): string {
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  while (lines.length) {
+    const last = lines[lines.length - 1];
+    const normalized = last.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+    const letters = normalized.match(/[A-Za-z]/g) ?? [];
+    const uppercase = normalized.match(/[A-Z]/g) ?? [];
+    const looksLikePageNoise = /^\d{1,4}$/.test(last) || /^(?:Buletini|Agjencia e Prokurimit Publik|APP)\b/i.test(last);
+    const looksLikeNextAuthority = /^(?:BASHKIA|SHOQERIA|SHOQËRIA|MINISTRIA|DREJTORIA|AGJENCIA|UNIVERSITETI|SPITALI|OPERATORI|ENTI|FONDI|INSTITUTI|QENDRA|NDERMARRJA|NDËRMARRJA)\b/i.test(last)
+      || (last.length >= 12 && last.length <= 180 && last.split(/\s+/).length >= 2 && letters.length > 0 && uppercase.length / letters.length >= 0.8);
+    if (!looksLikePageNoise && !looksLikeNextAuthority) break;
+    lines.pop();
+  }
+  return lines.join("\n");
+}
+
 export function segmentContractNotices(pages: ParsedPage[]): Array<{ text: string; start: number; end: number }> {
   const startIndex = pages.findIndex((page) => /NJOFTIM(?:E|I)?\s+KONTRAT|PROCEDURA\s+TË\s+HAPURA\s+PUNË/i.test(page.text));
   const endIndex = startIndex >= 0 ? pages.findIndex((page, index) => index > startIndex && /NJOFTIME\s+FITUESI/i.test(page.text)) : -1;
@@ -133,7 +149,7 @@ export function segmentContractNotices(pages: ParsedPage[]): Array<{ text: strin
     const headers = [...page.text.matchAll(/(?:^|\n)\s*1\.\s*Emri\s+dhe\s+adresa[^\n]*/gi)].map((match) => match.index ?? 0);
     if (headers.length) {
       if (current) {
-        const continuation = page.text.slice(0, headers[0]).trim();
+        const continuation = continuationBeforeNoticeHeader(page.text.slice(0, headers[0]));
         if (continuation) current.text += `\n${continuation}`;
         current.end = page.page;
         segments.push(current);

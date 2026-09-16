@@ -39,25 +39,32 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+  const snapshotRequest = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
+    snapshotRequest.current?.abort();
+    const controller = new AbortController();
+    snapshotRequest.current = controller;
     setError("");
     try {
       const params = new URLSearchParams({ period, decision });
       if (query) params.set("q", query);
       authorityIds.forEach((authorityId) => params.append("authority", authorityId));
-      const response = await fetch(`/api/snapshot?${params.toString()}`, { cache: "no-store" });
+      const response = await fetch(`/api/snapshot?${params.toString()}`, { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      setSnapshot(await response.json() as AppSnapshot);
+      const next = await response.json() as AppSnapshot;
+      if (snapshotRequest.current === controller) setSnapshot(next);
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
       console.error("[dashboard] snapshot failed", cause);
-      setError("Të dhënat nuk u ngarkuan. Kontrolloni serverin dhe provoni përsëri.");
+      if (snapshotRequest.current === controller) setError("Të dhënat nuk u ngarkuan. Kontrolloni serverin dhe provoni përsëri.");
     } finally {
-      setLoading(false);
+      if (snapshotRequest.current === controller) setLoading(false);
     }
   }, [authorityIds, decision, period, query]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => () => snapshotRequest.current?.abort(), []);
 
   useEffect(() => {
     const hasPending = snapshot.bulletins.some((bulletin) => ["queued", "processing"].includes(bulletin.status));

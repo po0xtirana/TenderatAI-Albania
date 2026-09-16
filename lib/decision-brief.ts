@@ -13,6 +13,13 @@ const issueId = (kind: string, text: string) => `${kind}-${text.toLocaleLowerCas
 const evidenceFor = (record: TenderRecord) => [{ page: record.tender.sourcePages.start, text: record.tender.contractObject, confidence: record.tender.extractionConfidence }];
 
 function suitability(record: TenderRecord): TenderSuitability {
+  if (record.match.decision === "blocked") {
+    if (record.match.score >= 80) return "strong_fit";
+    if (record.match.score >= 65) return "good_fit";
+    if (record.match.score >= 45) return "review_required";
+    if (record.match.score > 0) return "weak_fit";
+    return "unsuitable";
+  }
   if (record.match.decision === "high_fit") return "strong_fit";
   if (record.match.decision === "good_fit") return "good_fit";
   if (record.match.decision === "review") return "review_required";
@@ -65,10 +72,13 @@ export function generateDecisionBrief(record: TenderRecord, existing?: TenderDec
     return saved ? { ...item, ...saved } : item;
   });
   const result = recommendation(record, plan);
-  const strengths = [...record.match.confirmedCapabilities, ...record.match.reasons].filter((item) => {
-    const value = item.trim().toLocaleLowerCase("sq-AL");
-    return Boolean(value) && !value.includes("nuk ") && !value.includes("verifik") && !value.startsWith("kërkon ") && !value.startsWith("buletini ") && !value.startsWith("lokacioni ");
-  }).slice(0, 5);
+  const confirmedCriterionReasons = (record.match.criterionResults ?? [])
+    .filter((item) => item.result === "confirmed" && (item.score ?? 0) >= 75)
+    .map((item) => item.explanation);
+  const strengths = [...new Set([...record.match.confirmedCapabilities, ...confirmedCriterionReasons])]
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 5);
   return {
     tenderId: record.tender.id, capabilityVersion: record.match.capabilityVersion, recommendation: result.value,
     recommendationReason: result.reason, suitability: suitability(record), eligibility: record.match.eligibility,

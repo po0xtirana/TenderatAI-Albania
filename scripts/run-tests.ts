@@ -50,6 +50,12 @@ assert.equal(parsedFirst.contractingAuthority, "Bashkia Vlorë");
 assert.equal(parsedFirst.limitFundAll, 12_924_995.13);
 assert.equal(parsedSecond.referenceNumber, "REF-96250");
 assert.equal(parsedSecond.cpvCodes.includes("45410000-4"), true, "unicode dash CPV codes must be normalized");
+const crossPageAuthorities = segmentContractNotices([
+  { page: 18, text: `NJOFTIME KONTRATE${sampleNotice("Bashkia Vlorë", "REF-96260", "Rikonstruksion shkolle", "45454000-4", "20.000.000")}` },
+  { page: 19, text: `Informacion shtesë për procedurën e mëparshme.\n19\nGJYKATA E RRETHIT GJYQËSOR TIRANË\n${sampleNotice("Gjykata e Rrethit Gjyqësor Tiranë", "REF-96261", "Mirëmbajtje godine", "45450000-6", "6.000.000")}` }
+]);
+assert.equal(crossPageAuthorities.length, 2, "a new authority on the next page must start a separate notice");
+assert.equal(crossPageAuthorities[0].text.includes("GJYKATA E RRETHIT"), false, "the next authority banner must not contaminate the previous tender evidence");
 const splitAcrossPages = segmentContractNotices([
   { page: 20, text: `NJOFTIME KONTRATE${sampleNotice("Bashkia Has", "REF-96316-08-15-2026", "Rehabilitim kanali", "44130000-0", "96,935,269.17")}\n1. Emri dhe adresa e Autoritetit Kontraktor:\nEmri: Shoqëria Rajonale Ujësjellës Kanalizime Vlorë sh.a` },
   { page: 21, text: `2. Lloji i procedurës: Procedurë e hapur\n3. Numri i referencës së procedurës: REF-96305-08-14-2026\n4. Objekti i kontratës: Impiant i trajtimit të ujërave\n5. Kodi sipas Fjalorit të Përbashkët të Prokurimit (FPP): 45247130-0\n6. Fondi limit: 1,129,210,978 ALL\n7. Kohëzgjatja e kontratës: 18 muaj\n8. Afati i fundit për paraqitjen dhe hapjen e ofertave: 30.11.2026 ora 10:00\nInformacion shtesë për kërkesat e operatorëve ekonomikë dhe zbatimin e kontratës.` }
@@ -69,7 +75,7 @@ assert.equal(matchTender(cancelledNotice, snapshot.company).decision, "blocked",
 const company = { ...snapshot.company, excludedTerms: ["ujësjellës"] };
 const blocked = matchTender(snapshot.tenders[1].tender, company);
 assert.equal(blocked.decision, "blocked");
-assert.equal(blocked.score, 0);
+assert.equal(blocked.score > 0, true, "a commercial blocker must not erase technical suitability");
 
 const workflowTender = snapshot.tenders[0];
 assert.ok(workflowTender);
@@ -86,16 +92,22 @@ assert.equal(capabilityBefore.readiness.readyForMatching, true);
 assert.equal(capabilityBefore.model.crews.length >= 2, true);
 assert.equal(capabilityBefore.model.keyPeople.length >= 2, true);
 assert.equal(capabilityBefore.model.referenceProjects.length >= 2, true);
+const invalidPeople = structuredClone(capabilityBefore.model);
+invalidPeople.labourPools[0].headcount = 2;
+invalidPeople.labourPools[0].availableHeadcount = 5;
+assert.throws(() => updateCapabilitySection("people", { keyPeople: invalidPeople.keyPeople, labourPools: invalidPeople.labourPools }), /nuk mund të jenë më shumë/, "impossible capacity values must be rejected before they corrupt matching");
 const initialPlan = getTenderDeliveryPlan(snapshot.tenders[0].tender.id);
 assert.ok(initialPlan);
 assert.equal(initialPlan.workPackages.length > 0, true);
 assert.equal(initialPlan.workPackages.every((item) => item.evidenceText.length > 0), true);
+assert.equal(initialPlan.workPackages.some((item) => item.verificationStatus === "extracted"), true, "work packages backed by bulletin CPV data must not be labelled merely provisional");
 assert.equal(initialPlan.allocations.some((item) => item.source === "internal" || item.source === "partner" || item.source === "uncovered"), true);
 const initialBrief = getTender(snapshot.tenders[0].tender.id)?.decisionBrief;
 assert.ok(initialBrief, "every tender must expose a decision brief");
 assert.equal(initialBrief.evidenceCoverage, snapshot.tenders[0].match.evidenceCoverage, "evidence coverage must remain independent from suitability");
 assert.equal(initialBrief.recommendation, "do_not_proceed", "a low-fit tender must not be presented as a project to pursue");
 assert.equal(initialBrief.actions.length >= initialBrief.issues.length, true, "open brief issues must produce actionable next steps");
+assert.equal(initialBrief.strengths.some((item) => item.toLocaleLowerCase("sq-AL").includes("ka kaluar")), false, "an expired deadline must never be presented as a strength");
 const firstAction = initialBrief.actions[0];
 assert.ok(firstAction);
 assert.equal(updateTenderAction(snapshot.tenders[0].tender.id, firstAction.id, { status: "completed", completionNote: "Kontrolluar nga ekipi." })?.decisionBrief?.actions.find((item) => item.id === firstAction.id)?.status, "completed", "completed decision actions must persist");
@@ -148,7 +160,7 @@ const expiredModel = structuredClone(capabilityBefore.model);
 expiredModel.complianceRecords[0].expiryDate = "2020-01-01";
 const expiredReadiness = calculateReadiness(expiredModel);
 assert.equal(expiredReadiness.expiredItems.length > 0, true);
-assert.equal(expiredReadiness.readyForMatching, false);
+assert.equal(expiredReadiness.readyForMatching, true, "an expired optional document must be visible without globally disabling matching");
 
 const requirementTender = structuredClone(snapshot.tenders[0].tender);
 requirementTender.sourceText += "\nKapaciteti teknik: kërkohet eskavator dhe drejtues teknik.";
@@ -200,6 +212,9 @@ assert.equal(noScopeMatch.recommendation, "review");
 
 const noComplianceModel = structuredClone(capabilityBefore.model);
 noComplianceModel.complianceRecords = [];
+const noComplianceReadiness = calculateReadiness(noComplianceModel);
+assert.equal(noComplianceReadiness.blockingItems.some((item) => item.section === "compliance"), false, "licences are not a universal Albania tender prerequisite");
+assert.equal(noComplianceReadiness.readyForMatching, true, "a company may be match-ready before a specific tender asks for a licence");
 const sparseWithoutLicences = matchTender(sparseTender, snapshot.company, noComplianceModel);
 assert.equal(sparseWithoutLicences.score, sparseMatch.score, "licences must not affect suitability when the tender does not require one");
 assert.equal(sparseWithoutLicences.decision, sparseMatch.decision);

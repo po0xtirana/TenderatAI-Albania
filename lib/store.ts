@@ -11,6 +11,7 @@ import { normalize } from "./normalize";
 import { authorityFacets, authorityMatches } from "./authority-catalog";
 import { generateDeliveryPlan, recalculateDeliverySummary, updateAllocation } from "./delivery-plan";
 import { generateDecisionBrief } from "./decision-brief";
+import { validateCapabilitySection } from "./capability-validation";
 import { calculateReadiness, capabilitySnapshot, capabilityToLegacy, demoCapabilityModel, emptyCapabilityModel } from "./capabilities";
 import type {
   AppSnapshot, Bulletin, CapabilityDocument, CapabilityReadiness, CapabilitySectionKey, CapabilitySnapshot,
@@ -327,6 +328,12 @@ export function getSnapshot(options: { period?: "30d" | "90d" | "all"; decision?
     const searchable = `${record.tender.contractObject} ${record.tender.contractingAuthority} ${record.tender.referenceNumber}`.toLocaleLowerCase("sq-AL");
     return inPeriod && decision && authorityMatches(record.tender, options.authorities ?? []) && (!query || searchable.includes(query));
   }).sort((a, b) => {
+    const aBlocked = a.match.decision === "blocked" || a.tender.lifecycleStatus !== "active" ? 1 : 0;
+    const bBlocked = b.match.decision === "blocked" || b.tender.lifecycleStatus !== "active" ? 1 : 0;
+    if (aBlocked !== bBlocked) return aBlocked - bBlocked;
+    const decisionRank: Record<TenderRecord["match"]["decision"], number> = { high_fit: 0, good_fit: 1, review: 2, low_fit: 3, blocked: 4 };
+    const rankDifference = decisionRank[a.match.decision] - decisionRank[b.match.decision];
+    if (rankDifference) return rankDifference;
     const scoreDifference = b.match.score - a.match.score; if (scoreDifference) return scoreDifference;
     const aDeadline = a.tender.submissionDeadline ? Date.parse(a.tender.submissionDeadline) : Number.POSITIVE_INFINITY;
     const bDeadline = b.tender.submissionDeadline ? Date.parse(b.tender.submissionDeadline) : Number.POSITIVE_INFINITY;
@@ -387,6 +394,7 @@ export function getCapabilityVersions(): CapabilityVersion[] { return structured
 export function updateCapabilitySection(section: CapabilitySectionKey, payload: Record<string, unknown>): { model: CompanyCapabilityModel; readiness: CapabilityReadiness } {
   const store = runtime();
   const model = store.capability;
+  validateCapabilitySection(section, payload);
   if (section === "identity") { if (payload.identity) model.identity = payload.identity as CompanyCapabilityModel["identity"]; if (payload.operatingLocations) model.operatingLocations = payload.operatingLocations as CompanyCapabilityModel["operatingLocations"]; }
   else if (section === "work" && payload.workCapabilities) model.workCapabilities = payload.workCapabilities as CompanyCapabilityModel["workCapabilities"];
   else if (section === "geography" && payload.serviceAreas) model.serviceAreas = payload.serviceAreas as CompanyCapabilityModel["serviceAreas"];

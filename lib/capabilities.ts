@@ -193,7 +193,7 @@ export function calculateReadiness(model: CompanyCapabilityModel): CapabilityRea
   if (!model.serviceAreas.some((record) => record.active)) blockingItems.push(item("geography", "service_area", "Nuk është përcaktuar zona e shërbimit.", "Shtoni rajonet ku kompania mund të mobilizohet."));
 
   scores.compliance = validCompliance.length ? Math.min(100, 55 + (validCompliance.some((record) => record.referenceNumber) ? 20 : 0) + (validCompliance.some((record) => record.expiryDate) ? 25 : 0)) : 0;
-  if (!validCompliance.length) blockingItems.push(item("compliance", "licence", "Nuk ka licenca ose dokumente të vlefshme.", "Shtoni licencat dhe pajtueshmërinë."));
+  if (!validCompliance.length) warningItems.push(item("compliance", "licence", "Nuk ka licenca ose dokumente të vlefshme të regjistruara.", "Shtojini kur ekzistojnë; sistemi i verifikon si bllokues vetëm kur tenderi i kërkon shprehimisht."));
   for (const record of model.complianceRecords.filter((entry) => entry.active)) {
     const days = record.expiryDate ? (Date.parse(record.expiryDate) - Date.now()) / 86_400_000 : null;
     if (record.status === "expired" || (days != null && days < 0)) expiredItems.push(item("compliance", `expired_${record.id}`, `${record.name} ka skaduar.`, "Rinovoni dokumentin dhe ngarkoni provën e re."));
@@ -233,5 +233,5 @@ export function calculateReadiness(model: CompanyCapabilityModel): CapabilityRea
 
   const weights: Record<CapabilitySectionKey, number> = { identity: 10, work: 14, geography: 7, compliance: 12, people: 12, crews: 10, equipment: 8, financial: 10, experience: 9, partners: 3, rules: 5 };
   const overallScore = Math.round((Object.keys(weights) as CapabilitySectionKey[]).reduce((sum, section) => sum + scores[section] * weights[section], 0) / 100);
-  return { overallScore, sectionScores: scores, blockingItems, warningItems, expiredItems, staleItems, readyForMatching: blockingItems.length === 0 && expiredItems.length === 0 && overallScore >= 70, lastCalculatedAt: now() };
+  return { overallScore, sectionScores: scores, blockingItems, warningItems, expiredItems, staleItems, readyForMatching: blockingItems.length === 0 && overallScore >= 70, lastCalculatedAt: now() };
 }

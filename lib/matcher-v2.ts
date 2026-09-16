@@ -350,7 +350,10 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
     ...(financialFailure ? ["Vlera ose garancia tejkalon kapacitetin financiar të deklaruar."] : []),
     ...explicitFailures.map((item) => `Kërkesë e detyrueshme e pambuluar: ${item.tenderRequirement}.`),
   ];
-  if (hardBlocked) { score = 0; fitRangeLow = 0; fitRangeHigh = 0; }
+  // A blocker answers whether the company can pursue the opportunity; it does
+  // not erase how closely the work itself fits the company. Keeping these
+  // values separate prevents an expired deadline or a commercial exclusion
+  // from being presented as zero technical capability.
 
   const mandatory = requirementMatches.filter((item) => mandatoryContext(tender, item.tenderRequirement));
   let eligibility: TenderEligibility = hardBlocked ? "not_eligible" : mandatory.length && mandatory.every((item) => item.result === "confirmed") ? "eligible" : "eligibility_pending";

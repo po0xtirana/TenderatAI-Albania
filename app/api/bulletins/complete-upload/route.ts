@@ -1,9 +1,10 @@
 import { after, NextResponse } from "next/server";
-import { processBulletinData, queueBulletinData } from "@/lib/data";
+import { processQueuedBulletinData, queueBulletinData } from "@/lib/data";
 import { getSupabaseServerClient, ensureCompanyWorkspaceId } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null) as { fileName?: unknown; path?: unknown } | null;
@@ -20,6 +21,7 @@ export async function POST(request: Request) {
     const { data, error } = await client.storage.from("app-bulletins").download(path);
     if (error || !data) throw new Error(error?.message ?? "PDF-ja e ngarkuar nuk u gjet.");
     const buffer = Buffer.from(await data.arrayBuffer());
+    if (buffer.byteLength === 0 || buffer.byteLength > MAX_UPLOAD_BYTES) throw new Error("PDF-ja duhet të jetë më e vogël se 50 MB.");
     const pdfHeader = buffer.indexOf("%PDF-", 0, "ascii");
     if (pdfHeader < 0 || pdfHeader > 1024) throw new Error("Skedari nuk ka një strukturë PDF të vlefshme.");
     const bulletin = await queueBulletinData(fileName, buffer);
@@ -27,7 +29,7 @@ export async function POST(request: Request) {
     if (cleanupError) console.warn("[bulletin-upload] incoming file cleanup failed", cleanupError.message);
     else cleanupPath = "";
     after(async () => {
-      try { await processBulletinData(bulletin.id); }
+      try { await processQueuedBulletinData(bulletin.id); }
       catch (processingError) { console.error("[bulletin-processing] background processing failed", processingError); }
     });
     return NextResponse.json({ bulletin }, { status: 202 });
