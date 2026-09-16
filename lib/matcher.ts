@@ -1,6 +1,7 @@
 import { emptyCapabilityModel } from "./capabilities";
 import { normalize } from "./normalize";
 import { searchTermsForCpvCodes } from "./cpv-catalog";
+import { matchTenderV2, type MatchCalibration } from "./matcher-v2";
 import type { CapabilityRequirementMatch, CompanyCapabilityModel, CompanyCapabilityProfile, TenderEligibility, TenderMatch, TenderNotice } from "./types";
 
 /** Maximum contribution of each component. These weights add up to 100 and are
@@ -36,7 +37,13 @@ function sourceText(tender: TenderNotice): string { return normalize([tender.con
 function projectTerms(tender: TenderNotice): string[] { const text = sourceText(tender); return Object.entries(WORK_TERMS).filter(([, terms]) => terms.some((term) => text.includes(normalize(term)))).map(([key]) => key); }
 function parseRequiredLicences(tender: TenderNotice): string[] { const direct = normalize(tender.sourceText).match(/\b(?:np|ns)-?\s?\d{1,2}(?:-[a-z0-9]+)?\b/g) ?? []; return [...new Set(direct.map((value) => value.toUpperCase().replace(/\s/g, "")))].slice(0, 10); }
 function explicitRequirements(text: string, terms: string[]): string[] { return /kerkohet|duhet te kete|kapaciteti teknik|kriteret e vecanta|stafi teknik|mjetet dhe pajisjet|operatori ekonomik/.test(text) ? terms.filter((term) => text.includes(normalize(term))) : []; }
-function evidenceConfidence(tender: TenderNotice, requirementText: string): number { return textIncludes(normalize(tender.sourceText), requirementText) ? Math.min(0.94, tender.extractionConfidence) : Math.min(0.65, tender.extractionConfidence); }
+function evidenceConfidence(tender: TenderNotice, requirementText: string): number {
+  const source = normalize(tender.sourceText);
+  const compactSource = source.replace(/[^a-z0-9]/g, "");
+  const compactRequirement = normalize(requirementText).replace(/[^a-z0-9]/g, "");
+  const present = textIncludes(source, requirementText) || (compactRequirement.length >= 3 && compactSource.includes(compactRequirement));
+  return present ? Math.min(0.94, tender.extractionConfidence) : Math.min(0.65, tender.extractionConfidence);
+}
 function requirement(type: string, tenderRequirement: string, companyCapability: string | null, result: CapabilityRequirementMatch["result"], tender: TenderNotice, explanation: string): CapabilityRequirementMatch { const confidence = evidenceConfidence(tender, tenderRequirement); return { requirementType: type, tenderRequirement, companyCapability, result, tenderEvidence: [{ page: tender.sourcePages.start, text: tenderRequirement, confidence }], companyEvidence: companyCapability ? [companyCapability] : [], confidence, explanation }; }
 function partnerTerms(partner: CompanyCapabilityModel["partners"][number]): string[] { return [...partner.categories, ...(partner.workTypes ?? []), ...(partner.capabilities ?? []).flatMap((capability) => [capability.name, capability.category, ...capability.tasks])].filter(Boolean); }
 function partnerCovers(partner: CompanyCapabilityModel["partners"][number], tender: TenderNotice, term?: string): boolean {
@@ -63,7 +70,7 @@ function workFit(tender: TenderNotice, model: CompanyCapabilityModel, profile: C
   return { direct: [...new Set([...directCpv, ...directTerms].map((item) => item.trade))], legacy, partners, scope: directCpv.length ? 20 : directTerms.length ? 17 : legacy.length ? 14 : partners.length ? 11 : 2 };
 }
 
-export function matchTender(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel?: CompanyCapabilityModel): TenderMatch {
+function matchTenderLegacy(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel?: CompanyCapabilityModel): TenderMatch {
   const model = suppliedModel ?? emptyCapabilityModel(profile); const text = sourceText(tender); const tenderTerms = projectTerms(tender);
   const requirementMatches: CapabilityRequirementMatch[] = []; const confirmedCapabilities: string[] = []; const capabilityGaps: string[] = []; const staleInformation: string[] = []; const blockers: string[] = []; const missingInformation: string[] = []; const confirmedMandatoryFailures: CapabilityRequirementMatch[] = [];
   const scopeFit = workFit(tender, model, profile);
@@ -116,6 +123,16 @@ export function matchTender(tender: TenderNotice, profile: CompanyCapabilityProf
   let decision: TenderMatch["decision"] = hardBlocked ? "blocked" : score >= 80 ? "high_fit" : score >= 65 ? "good_fit" : score >= 45 ? "review" : "low_fit"; if (eligibility === "eligibility_pending" && decision === "high_fit") decision = "good_fit";
   const reasons = [scopeFit.direct.length || scopeFit.legacy.length ? `Përputhje direkte me ${(scopeFit.direct.length ? scopeFit.direct : scopeFit.legacy).join(", ")}.` : scopeFit.partners.length ? `Mbulim i mundshëm nga partnerët e aprovuar: ${scopeFit.partners.map((item) => item.name).join(", ")}.` : "Nuk u gjet specializim i drejtpërdrejtë.", similarProjects.length ? `${similarProjects.length} projekt${similarProjects.length === 1 ? "" : "e"} reference janë të ngjashme.` : "Eksperienca e krahasueshme nuk është verifikuar ende.", value == null ? "Fondi limit nuk është i qartë." : valueInRange ? "Vlera është brenda kapacitetit financiar të deklaruar." : "Vlera tejkalon kapacitetin financiar të lirë.", eligibilityReason];
   return { tenderId: tender.id, score, decision, components, blockers: [...new Set(blockers)], reasons, matchedTerms: tenderTerms.length ? tenderTerms : scopeFit.direct.length ? scopeFit.direct : scopeFit.partners.map((partner) => `partner: ${partner.name}`), missingInformation: [...new Set(missingInformation)], confirmedCapabilities: [...new Set(confirmedCapabilities)], capabilityGaps: [...new Set(capabilityGaps)], staleInformation: [...new Set(staleInformation)], requirementMatches, eligibility, eligibilityReason, evidenceCoverage, capabilityVersion: model.activeVersion, updatedAt: new Date().toISOString() };
+}
+
+/**
+ * The evidence-adaptive V2 model is the single production scorer. The legacy
+ * pass is retained only to extract explicit staff, equipment, licence and
+ * guarantee requirements until those parsers are moved into their own module.
+ */
+export function matchTender(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel?: CompanyCapabilityModel, calibration?: MatchCalibration): TenderMatch {
+  const legacy = matchTenderLegacy(tender, profile, suppliedModel);
+  return matchTenderV2(tender, profile, suppliedModel, legacy, calibration);
 }
 
 export function decisionLabel(decision: TenderMatch["decision"]): string { return ({ high_fit: "Përshtatje shumë e lartë", good_fit: "Përshtatje e mirë", review: "Për rishikim", low_fit: "Përshtatje e dobët", blocked: "I bllokuar" })[decision]; }

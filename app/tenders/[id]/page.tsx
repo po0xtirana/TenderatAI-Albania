@@ -244,6 +244,9 @@ export default function TenderDetailPage() {
                 Profili v{match.capabilityVersion || "—"}
               </span>
               <span className="tag">
+                {match.scoringModelVersion?.includes("v2") ? "Scoring V2" : "Scoring V1"}
+              </span>
+              <span className="tag">
                 Faqet {tender.sourcePages.start}–{tender.sourcePages.end}
               </span>
             </div>
@@ -257,6 +260,7 @@ export default function TenderDetailPage() {
             <small>PËRPUTHJA</small>
             <strong>{match.score}</strong>
             <span>/100</span>
+            <small className="score-confidence">SIGURIA {match.confidenceScore ?? match.evidenceCoverage}%</small>
           </div>
         </section>
         {decisionBrief && <DecisionBriefSection brief={decisionBrief} tenderId={tender.id} deliveryPlan={deliveryPlan} onChange={setDecisionBrief} />}
@@ -293,9 +297,14 @@ export default function TenderDetailPage() {
             <p>{match.eligibilityReason}</p>
           </div>
           <div>
-            <span className="eyebrow">MBULIMI I PROVAVE</span>
-            <b>{match.evidenceCoverage}%</b>
-            <p>Sa shumë fakte të kontrollueshme u gjetën në buletin.</p>
+            <span className="eyebrow">SIGURIA E VLERËSIMIT</span>
+            <b>{match.confidenceScore ?? match.evidenceCoverage}%</b>
+            <p>Mat sa prova të tenderit dhe kompanisë mbështesin rezultatin; mungesa e të dhënave nuk llogaritet si dështim.</p>
+          </div>
+          <div>
+            <span className="eyebrow">INTERVALI I MUNDSHËM</span>
+            <b>{match.fitRangeLow ?? match.score}–{match.fitRangeHigh ?? match.score}</b>
+            <p>Tregon sa mund të ndryshojë përshtatja pasi të verifikohen kriteret që mungojnë.</p>
           </div>
         </section>
         {deliveryPlan && (
@@ -316,7 +325,18 @@ export default function TenderDetailPage() {
                 <span className="verified">✓ E GJURMUESHME</span>
               </div>
               <div className="components">
-                {Object.entries(match.components).map(([key, value]) => (
+                {match.criterionResults?.length ? match.criterionResults.map((criterion) => (
+                  <div className={`component component-${criterion.applicability}`} key={criterion.key}>
+                    <div>
+                      <span>{criterion.label}</span>
+                      <b>{criterion.applicability === "not_applicable" ? "Nuk zbatohet" : criterion.score == null ? "E panjohur" : `${criterion.score}/100`}</b>
+                    </div>
+                    <div className="component-bar">
+                      <i style={{ width: `${criterion.score ?? 0}%` }} />
+                    </div>
+                    <p className="component-meta">Peshë {criterion.weight}% · siguri {Math.round(criterion.evidenceQuality * 100)}% · {criterion.explanation}</p>
+                  </div>
+                )) : Object.entries(match.components).map(([key, value]) => (
                   <div className="component" key={key}>
                     <div>
                       <span>{componentLabels[key] ?? key}</span>

@@ -177,6 +177,26 @@ export type MatchComponents = {
   financial: number; geography: number; schedule: number; preference: number;
 };
 
+export type ScoringCriterionApplicability = "applicable" | "not_applicable" | "unknown";
+export type ScoringCriterionKey = "scope" | "delivery" | "experience" | "financial" | "geography" | "schedule" | "preference";
+export type ScoringCriterionResult = {
+  key: ScoringCriterionKey;
+  label: string;
+  weight: number;
+  applicability: ScoringCriterionApplicability;
+  result: "confirmed" | "partial" | "contradicted" | "missing" | "unknown";
+  score: number | null;
+  evidenceQuality: number;
+  contribution: number;
+  lowerBound: number;
+  upperBound: number;
+  tenderEvidence: Evidence[];
+  companyEvidence: string[];
+  explanation: string;
+};
+
+export type MatchRecommendation = "strong" | "good" | "promising_verify" | "review" | "low" | "blocked";
+
 export type TenderMatch = {
   tenderId: string; score: number; decision: TenderDecision; components: MatchComponents; blockers: string[];
   reasons: string[]; matchedTerms: string[]; missingInformation: string[]; confirmedCapabilities: string[];
@@ -185,6 +205,16 @@ export type TenderMatch = {
   eligibility: TenderEligibility;
   eligibilityReason: string;
   evidenceCoverage: number;
+  observedFitScore?: number;
+  confidenceScore?: number;
+  fitRangeLow?: number;
+  fitRangeHigh?: number;
+  criterionResults?: ScoringCriterionResult[];
+  recommendation?: MatchRecommendation;
+  recommendationReason?: string;
+  criticalUnknowns?: string[];
+  scoringModelVersion?: string;
+  calibrationVersion?: string;
   capabilityVersion: number; updatedAt: string;
 };
 

@@ -97,7 +97,17 @@ for (const record of state.tenders) {
   await upsert("tender_matches", {
     owner_user_id: owner, tender_notice_id: tenderId, score: record.match.score, decision: record.match.decision,
     components: record.match.components, blockers: record.match.blockers, reasons: record.match.reasons, matched_terms: record.match.matchedTerms,
-    missing_information: record.match.missingInformation, capability_version: record.match.capabilityVersion, ranking_version: "albania-rules-v1",
+    missing_information: record.match.missingInformation, capability_version: record.match.capabilityVersion,
+    ranking_version: record.match.scoringModelVersion ?? "albania-evidence-adaptive-v2",
+    observed_fit_score: record.match.observedFitScore ?? record.match.score,
+    confidence_score: record.match.confidenceScore ?? record.match.evidenceCoverage,
+    fit_range_low: record.match.fitRangeLow ?? record.match.score,
+    fit_range_high: record.match.fitRangeHigh ?? record.match.score,
+    criterion_results: record.match.criterionResults ?? [],
+    recommendation: record.match.recommendation ?? "review",
+    recommendation_reason: record.match.recommendationReason ?? "Kërkon rishikim.",
+    critical_unknowns: record.match.criticalUnknowns ?? [],
+    calibration_version: record.match.calibrationVersion ?? "feedback-beta-v1",
     workflow_status: record.workflowStatus, relevance_feedback: record.relevanceFeedback ?? null, feedback_at: null
   }, "owner_user_id,tender_notice_id");
   await client.from("tender_insights").delete().eq("owner_user_id", owner).eq("tender_notice_id", tenderId);

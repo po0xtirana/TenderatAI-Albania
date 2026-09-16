@@ -3,7 +3,7 @@ process.env.TENDERAT_AI_TEST_MODE = "1";
 import { activateCapabilities, getCapabilities, getSnapshot, getTender, getTenderDeliveryPlan, recordFeedback, removeBulletin, updateCapabilitySection, updateTenderAction, updateTenderDecision, updateTenderWorkflow, updateTenderDeliveryAllocation } from "../lib/store";
 import { matchTender } from "../lib/matcher";
 import { normalize } from "../lib/normalize";
-import { calculateReadiness } from "../lib/capabilities";
+import { calculateReadiness, emptyCapabilityModel } from "../lib/capabilities";
 import { suggestCpvSpecializations } from "../lib/cpv-catalog";
 import { authorityId } from "../lib/authority-catalog";
 import { generateDeliveryPlan } from "../lib/delivery-plan";
@@ -175,6 +175,56 @@ insufficientGuaranteeModel.financialCapacity.bidSecurityLimitAll = 1_000_000;
 const insufficientGuarantee = matchTender(insufficientGuaranteeTender, snapshot.company, insufficientGuaranteeModel);
 assert.equal(insufficientGuarantee.requirementMatches.some((item) => item.tenderRequirement.includes("garanci")), true, JSON.stringify(insufficientGuarantee));
 assert.equal(insufficientGuarantee.decision, "blocked", "a known guarantee shortfall must not be hidden in a high fit score");
+
+const sparseTender = structuredClone(requirementTender);
+sparseTender.id = "sparse-bulletin-tender";
+sparseTender.contractObject = "Rikonstruksion i godinës publike dhe veshje fasade";
+sparseTender.cpvCodes = ["45454000-4"];
+sparseTender.sourceText = "Objekti i kontratës: Rikonstruksion i godinës publike dhe veshje fasade. Kodi CPV: 45454000-4.";
+sparseTender.limitFundAll = null;
+sparseTender.address = null;
+sparseTender.submissionDeadline = "2027-11-30T10:00:00.000Z";
+sparseTender.lifecycleStatus = "active";
+const sparseMatch = matchTender(sparseTender, snapshot.company, capabilityBefore.model);
+assert.equal(sparseMatch.scoringModelVersion, "albania-evidence-adaptive-v2", "V2 must be the only production scorer");
+assert.equal(sparseMatch.decision === "blocked" || sparseMatch.decision === "low_fit", false, "missing bulletin details must not create a false rejection");
+assert.equal((sparseMatch.confidenceScore ?? 100) < 80, true, "sparse bulletin data must lower confidence rather than suitability");
+assert.equal((sparseMatch.fitRangeHigh ?? 0) >= sparseMatch.score, true);
+assert.equal(sparseMatch.criterionResults?.some((item) => item.key === "financial" && item.applicability === "unknown"), true);
+assert.equal(sparseMatch.eligibility, "eligibility_pending");
+
+const blankProfile = { ...snapshot.company, trades: [], cpvPrefixes: [], serviceRegions: [], licences: [], preferredAuthorities: [], excludedTerms: [], availableEmployees: null, availableEquipment: [], maxValueAll: null };
+const noScopeMatch = matchTender(sparseTender, blankProfile, emptyCapabilityModel(blankProfile));
+assert.equal(noScopeMatch.score <= 50, true, "deadline and geography must not manufacture suitability without a company scope signal");
+assert.equal(noScopeMatch.recommendation, "review");
+
+const noComplianceModel = structuredClone(capabilityBefore.model);
+noComplianceModel.complianceRecords = [];
+const sparseWithoutLicences = matchTender(sparseTender, snapshot.company, noComplianceModel);
+assert.equal(sparseWithoutLicences.score, sparseMatch.score, "licences must not affect suitability when the tender does not require one");
+assert.equal(sparseWithoutLicences.decision, sparseMatch.decision);
+
+const mentionedLicenceTender = structuredClone(sparseTender);
+mentionedLicenceTender.id = "mentioned-licence-tender";
+mentionedLicenceTender.sourceText += " Informacion orientues: licenca NP-99.";
+const mentionedLicence = matchTender(mentionedLicenceTender, snapshot.company, noComplianceModel);
+assert.notEqual(mentionedLicence.decision, "blocked", "a licence mention without mandatory language must remain unverified");
+assert.equal(mentionedLicence.requirementMatches.some((item) => item.tenderRequirement.replace(/\W/g, "") === "NP99" && item.result === "unknown"), true);
+
+const mandatoryLicenceTender = structuredClone(sparseTender);
+mandatoryLicenceTender.id = "mandatory-licence-tender";
+mandatoryLicenceTender.sourceText += " Kriteret e veçanta: kërkohet detyrimisht licenca NP-99.";
+const mandatoryLicence = matchTender(mandatoryLicenceTender, snapshot.company, noComplianceModel);
+assert.equal(mandatoryLicence.decision, "blocked", "only an explicit, high-confidence mandatory licence may block participation");
+
+const electricalPartnerMatch = matchTender(partnerTender, snapshot.company, capabilityBefore.model);
+const partnerScope = electricalPartnerMatch.criterionResults?.find((item) => item.key === "scope");
+assert.equal((partnerScope?.score ?? 0) >= 85, true, "an approved partner must receive full technical scope credit");
+assert.equal(electricalPartnerMatch.confirmedCapabilities.some((item) => item.includes("partner")), true);
+
+const calibratedUp = matchTender(sparseTender, snapshot.company, capabilityBefore.model, { adjustment: 5, evidenceCount: 5, version: "feedback-beta-v1" });
+assert.equal(calibratedUp.score, Math.min(100, sparseMatch.score + 5), "smoothed feedback may adjust future ranking by at most five points");
+assert.equal(calibratedUp.calibrationVersion, "feedback-beta-v1");
 
 const removedBulletin = removeBulletin(snapshot.bulletins[0].id);
 assert.equal(removedBulletin?.id, snapshot.bulletins[0].id, "bulletin deletion must return the removed bulletin");
