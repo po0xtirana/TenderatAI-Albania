@@ -1,0 +1,15 @@
+# Local-only and generated artifacts must never be uploaded to Vercel.
+node_modules/
+.next/
+.next-build/
+.next-dev/
+.next-stale-*/
+data/
+tmp/
+.handoff-stage*/
+TenderatAI-Company-Ready/
+TenderatAI-Company-Ready.zip
+.env*
+*.log
+tsconfig.tsbuildinfo
+supabase/.temp/
