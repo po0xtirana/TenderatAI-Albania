@@ -160,9 +160,10 @@ portGateModel.labourPools = [
 const portGatePlan = generateDeliveryPlan(portGateTender, portGateModel);
 assert.equal(portGatePlan.workPackages.some((item) => item.task === "Ndërtim ndërtesash"), true, "building CPV must create a building package");
 assert.equal(portGatePlan.workPackages.some((item) => item.task === "Instalime elektrike"), true, "related electrical CPVs must create an electrical package");
-assert.equal(portGatePlan.summary.internalPercent, 100, "available construction and electrical labour must be recognized as internal capacity");
+assert.equal(portGatePlan.summary.internalPercent, 50, "a single murator must not be mistaken for the multiple distinct construction roles required for the building component");
+assert.equal(portGatePlan.summary.internalConfirmedCount, 1, "only the electrical component has a confirmed matching workforce");
 const portGateMatch = matchTender(portGateTender, snapshot.company, portGateModel);
-assert.equal((portGateMatch.criterionResults?.find((item) => item.key === "delivery")?.score ?? 0) >= 90, true, "delivery scoring must agree with the internal delivery plan");
+assert.equal((portGateMatch.criterionResults?.find((item) => item.key === "delivery")?.score ?? 0) < 90, true, "delivery scoring must reflect the component that still needs workforce verification");
 const firstAllocation = initialPlan.allocations.find((item) => item.source !== "rental");
 assert.ok(firstAllocation);
 assert.equal(updateTenderDeliveryAllocation(snapshot.tenders[0].tender.id, firstAllocation.id, { status: "confirmed" })?.deliveryPlan?.allocations.find((item) => item.id === firstAllocation.id)?.status, "confirmed");
@@ -174,10 +175,10 @@ updateCapabilitySection("rules", {
   bidPreferences: { ...capabilityBefore.model.bidPreferences, excludedProjectTypes: [...capabilityBefore.model.bidPreferences.excludedProjectTypes, "ujësjellësit"] },
   commitments: capabilityBefore.model.commitments
 });
-assert.equal(getTender(target.tender.id)?.match.score, scoreBeforeDraft, "draft edits must not change active tender rankings");
+assert.equal(getTender(target.tender.id)?.match.capabilityVersion, capabilityBefore.model.activeVersion + 1, "a complete saved profile change must publish a new active matching version automatically");
+assert.equal(getTender(target.tender.id)?.match.decision, "blocked", "automatic publication must re-rank with the new version");
 const activated = activateCapabilities();
-assert.equal(activated.version.version, capabilityBefore.model.activeVersion + 1);
-assert.equal(getTender(target.tender.id)?.match.decision, "blocked", "activation must re-rank with the new version");
+assert.equal(activated.version.version, capabilityBefore.model.activeVersion + 2, "manual activation remains available for an explicit immutable checkpoint");
 
 const expiredModel = structuredClone(capabilityBefore.model);
 expiredModel.complianceRecords[0].expiryDate = "2020-01-01";
@@ -231,7 +232,7 @@ assert.equal(sparseMatch.eligibility, "eligibility_pending");
 const blankProfile = { ...snapshot.company, trades: [], cpvPrefixes: [], serviceRegions: [], licences: [], preferredAuthorities: [], excludedTerms: [], availableEmployees: null, availableEquipment: [], maxValueAll: null };
 const noScopeMatch = matchTender(sparseTender, blankProfile, emptyCapabilityModel(blankProfile));
 assert.equal(noScopeMatch.score <= 50, true, "deadline and geography must not manufacture suitability without a company scope signal");
-assert.equal(noScopeMatch.recommendation, "review");
+assert.equal(noScopeMatch.recommendation, "promising_verify", "an empty company profile must remain clearly preliminary rather than receiving a fabricated positive fit");
 
 const noComplianceModel = structuredClone(capabilityBefore.model);
 noComplianceModel.complianceRecords = [];
@@ -257,11 +258,13 @@ assert.equal(mandatoryLicence.decision, "blocked", "only an explicit, high-confi
 
 const electricalPartnerMatch = matchTender(partnerTender, snapshot.company, capabilityBefore.model);
 const partnerScope = electricalPartnerMatch.criterionResults?.find((item) => item.key === "scope");
-assert.equal((partnerScope?.score ?? 0) >= 85, true, "an approved partner must receive full technical scope credit");
-assert.equal(electricalPartnerMatch.confirmedCapabilities.some((item) => item.includes("partner")), true);
+const partnerDelivery = electricalPartnerMatch.criterionResults?.find((item) => item.key === "delivery");
+assert.equal((partnerScope?.score ?? 0) < 85, true, "a partner must not be presented as the company’s own scope capability");
+assert.equal((partnerDelivery?.score ?? 0) >= 75, true, "an approved available partner must receive delivery coverage credit");
+assert.equal(electricalPartnerMatch.confirmedCapabilities.some((item) => item.toLocaleLowerCase("sq-AL").includes("partner")), true);
 
 const calibratedUp = matchTender(sparseTender, snapshot.company, capabilityBefore.model, { adjustment: 5, evidenceCount: 5, version: "feedback-beta-v1" });
-assert.equal(calibratedUp.score, Math.min(100, sparseMatch.score + 5), "smoothed feedback may adjust future ranking by at most five points");
+assert.equal(calibratedUp.score, sparseMatch.score, "relevance feedback must not alter technical suitability");
 assert.equal(calibratedUp.calibrationVersion, "feedback-beta-v1");
 
 const removedBulletin = removeBulletin(snapshot.bulletins[0].id);

@@ -1,5 +1,4 @@
 import { emptyCapabilityModel } from "./capabilities";
-import { searchTermsForCpvCodes } from "./cpv-catalog";
 import { normalize } from "./normalize";
 import { generateDeliveryPlan } from "./delivery-plan";
 import type {
@@ -29,7 +28,7 @@ type LegacyMatch = Pick<TenderMatch,
   "capabilityGaps" | "staleInformation" | "requirementMatches"
 >;
 
-const WEIGHTS = { scope: 30, delivery: 25, experience: 15, financial: 15, geography: 5, schedule: 5, preference: 5 } as const;
+const WEIGHTS = { scope: 60, delivery: 20, experience: 15, geography: 5, financial: 0, schedule: 0, preference: 0 } as const;
 const DAY = 86_400_000;
 const MANDATORY_TERMS = ["kerkohet", "duhet te kete", "detyrimisht", "kusht i vecante", "kapaciteti teknik", "kriteret e vecanta", "operatori ekonomik"];
 
@@ -166,49 +165,37 @@ function freshnessPenalty(model: CompanyCapabilityModel): number {
 }
 
 function scopeCriterion(tender: TenderNotice, model: CompanyCapabilityModel, profile: CompanyCapabilityProfile): ScoringCriterionResult {
-  const text = sourceText(tender);
-  const work = model.workCapabilities.filter((item) => item.active);
-  const partners = activeApprovedPartners(model);
-  const companyCodes = work.flatMap((item) => item.cpvPrefixes.map((code) => ({ code, label: item.trade })));
-  const partnerCodes = partners.flatMap((partner) => [...(partner.cpvCodes ?? []), ...(partner.capabilities ?? []).flatMap((item) => item.cpvCodes)].map((code) => ({ code, label: partner.name })));
-  let bestCpv = 0; const cpvEvidence: string[] = [];
-  for (const companyCode of [...companyCodes, ...partnerCodes]) for (const tenderCode of tender.cpvCodes) {
-    const similarity = cpvSimilarity(companyCode.code, tenderCode);
-    if (similarity > bestCpv) { bestCpv = similarity; cpvEvidence.splice(0, cpvEvidence.length, `${companyCode.label}: ${companyCode.code} ↔ ${tenderCode}`); }
-  }
-  const directTerms = work.filter((item) => [item.trade, ...item.projectTypes, ...item.buildingTypes, ...searchTermsForCpvCodes(item.cpvPrefixes)].some((term) => textIncludes(text, term)));
-  const matchingPartners = partners.filter((partner) => partnerMatchesTender(partner, tender));
-  const legacyTerms = profile.trades.filter((trade) => (WORK_TERMS[trade] ?? [trade]).some((term) => textIncludes(text, term)));
-  const configured = work.length > 0 || profile.trades.length > 0 || partners.length > 0;
-  if (!configured) return makeCriterion({ key: "scope", label: "Fusha, CPV dhe paketat e punës", weight: WEIGHTS.scope, applicability: "unknown", score: null, evidenceQuality: 0, tenderEvidence: evidence(tender), explanation: "Kompania nuk ka aktivizuar ende fusha pune ose partnerë të aprovuar." });
-  const semanticScore = directTerms.length || matchingPartners.length ? 86 : legacyTerms.length ? 78 : 0;
-  const score = Math.max(bestCpv, semanticScore, tender.contractObject ? 10 : 0);
-  const quality = bestCpv >= 75 && tender.cpvCodes.length ? Math.min(0.98, tender.extractionConfidence + 0.03) : semanticScore ? Math.min(0.84, tender.extractionConfidence) : Math.min(0.76, tender.extractionConfidence);
-  const companyEvidence = [...cpvEvidence, ...directTerms.map((item) => item.trade), ...matchingPartners.map((item) => `${item.name} · partner i aprovuar`), ...legacyTerms].filter(Boolean);
-  return makeCriterion({
-    key: "scope", label: "Fusha, CPV dhe paketat e punës", weight: WEIGHTS.scope, applicability: "applicable", score,
-    evidenceQuality: quality, tenderEvidence: evidence(tender), companyEvidence,
-    explanation: score >= 75 ? `Objekti dhe CPV-ja përputhen me ${companyEvidence.slice(0, 3).join(", ")}.` : "Objekti është i qartë, por nuk u gjet një specializim i afërt në profilin aktiv.",
-  });
+  const configured = model.workCapabilities.some((item) => item.active) || profile.trades.length > 0 || activeApprovedPartners(model).length > 0;
+  if (!configured) return makeCriterion({ key: "scope", label: "Fusha dhe komponentët e punës", weight: WEIGHTS.scope, applicability: "unknown", score: null, evidenceQuality: 0, tenderEvidence: evidence(tender), explanation: "Kompania nuk ka deklaruar ende një fushë pune ose partner të aprovuar." });
+  const plan = generateDeliveryPlan(tender, model);
+  const scoreFor = { exact: 100, equivalent: 85, broad: 60, partner: 70, unmatched: 0, unknown: 0 } as const;
+  const score = plan.workPackages.length ? plan.workPackages.reduce((sum, item) => sum + scoreFor[item.scopeMatch ?? "unknown"], 0) / plan.workPackages.length : null;
+  const resolved = plan.workPackages.filter((item) => item.scopeMatch !== "unknown").length;
+  const companyEvidence = plan.workPackages.filter((item) => ["exact", "equivalent", "broad", "partner"].includes(item.scopeMatch ?? "unknown")).map((item) => `${item.task}: ${item.matchedCapability ?? item.scopeMatch}`).filter(Boolean);
+  const unknown = plan.workPackages.filter((item) => ["unknown", "unmatched"].includes(item.scopeMatch ?? "unknown"));
+  const quality = plan.workPackages.length ? Math.min(0.95, tender.extractionConfidence * (resolved / plan.workPackages.length)) : 0;
+  const explanation = unknown.length
+    ? `${companyEvidence.length} nga ${plan.workPackages.length} komponentë përputhen me profilin; ${unknown.length} komponentë kërkojnë verifikim ose specializim të deklaruar.`
+    : `Të gjithë komponentët e identifikuar përputhen me fushat e deklaruara.`;
+  return makeCriterion({ key: "scope", label: "Fusha dhe komponentët e punës", weight: WEIGHTS.scope, applicability: "applicable", score, evidenceQuality: quality, tenderEvidence: evidence(tender), companyEvidence, explanation });
 }
 
 function deliveryCriterion(tender: TenderNotice, model: CompanyCapabilityModel, legacy: LegacyMatch): ScoringCriterionResult {
   const plan = generateDeliveryPlan(tender, model);
   const explicit = legacy.requirementMatches.filter((item) => ["personnel", "equipment"].includes(item.requirementType) && mandatoryContext(tender, item.tenderRequirement));
   const confirmed = explicit.filter((item) => item.result === "confirmed").length;
-  const companyEvidence = plan.allocations.filter((item) => item.source !== "uncovered" && item.source !== "rental").map((item) => item.companyCapability ?? item.partnerName ?? item.rationale).filter(Boolean);
+  const companyEvidence = plan.workPackages.filter((item) => ["confirmed_internal", "confirmed_partner"].includes(item.deliveryStatus ?? "unknown")).map((item) => `${item.task}: ${item.matchedCapability ?? "kapacitet i konfirmuar"}`);
   if (!explicit.length && !companyEvidence.length && !model.workCapabilities.length) return makeCriterion({ key: "delivery", label: "Kapaciteti i realizimit", weight: WEIGHTS.delivery, applicability: "unknown", score: null, evidenceQuality: 0, tenderEvidence: evidence(tender), explanation: "Nuk ka të dhëna të mjaftueshme për njerëzit, ekipet, pajisjet ose partnerët." });
   let score: number; let quality: number; let explanation: string;
   if (explicit.length) {
     score = 100 * confirmed / explicit.length;
     quality = Math.min(0.95, explicit.reduce((sum, item) => sum + item.confidence, 0) / explicit.length);
     explanation = `${confirmed} nga ${explicit.length} kërkesa të shprehura për personel ose pajisje mbulohen.`;
-  } else if (plan.summary.internalPercent > 0 || plan.summary.partnerPercent > 0) {
-    score = Math.round(plan.summary.internalPercent * 0.95 + plan.summary.partnerPercent * 0.75);
-    quality = Math.max(0.35, Math.min(0.82, plan.workPackages.reduce((sum, item) => sum + item.confidence, 0) / Math.max(1, plan.workPackages.length) - freshnessPenalty(model)));
-    explanation = plan.summary.internalPercent === 100
-      ? "Të gjitha paketat e identifikuara mbulohen nga kapaciteti i brendshëm i disponueshëm."
-      : `${plan.summary.internalPercent}% mbulohet brenda kompanisë dhe ${plan.summary.partnerPercent}% nga partnerë të aprovuar; pjesa tjetër kërkon verifikim.`;
+  } else if ((plan.summary.internalConfirmedCount ?? 0) || (plan.summary.partnerConfirmedCount ?? 0)) {
+    const total = Math.max(1, plan.summary.componentCount ?? plan.workPackages.length);
+    score = ((plan.summary.internalConfirmedCount ?? 0) * 100 + (plan.summary.partnerConfirmedCount ?? 0) * 75) / total;
+    quality = Math.max(0.25, Math.min(0.82, plan.workPackages.reduce((sum, item) => sum + item.confidence, 0) / total - freshnessPenalty(model)));
+    explanation = `${plan.summary.internalConfirmedCount ?? 0} nga ${total} komponentë kanë kapacitet të brendshëm të konfirmuar; ${plan.summary.partnerConfirmedCount ?? 0} mbulohen nga partnerë dhe ${plan.summary.unverifiedCount ?? 0} kërkojnë verifikim.`;
   } else if (model.workCapabilities.length) {
     score = 60; quality = 0.45 - freshnessPenalty(model);
     explanation = "Fusha është deklaruar, por nuk u gjet staf, ekip ose partner i disponueshëm për paketat e identifikuara.";
@@ -259,7 +246,7 @@ function financialCriterion(tender: TenderNotice, model: CompanyCapabilityModel,
 function geographyCriterion(tender: TenderNotice, model: CompanyCapabilityModel, profile: CompanyCapabilityProfile): ScoringCriterionResult {
   const areas = model.serviceAreas.filter((item) => item.active);
   const legacyAreas = profile.serviceRegions;
-  const text = sourceText(tender);
+  const text = normalize([tender.address, tender.contractObject].filter(Boolean).join(" "));
   const locationKnown = Boolean(tender.address) || Object.values(REGION_TERMS).some((terms) => terms.some((term) => textIncludes(text, term)));
   if (!locationKnown) return makeCriterion({ key: "geography", label: "Gjeografia dhe mobilizimi", weight: WEIGHTS.geography, applicability: "unknown", score: null, evidenceQuality: 0, explanation: "Vendndodhja nuk është publikuar qartë në buletin." });
   if (!areas.length && !legacyAreas.length) return makeCriterion({ key: "geography", label: "Gjeografia dhe mobilizimi", weight: WEIGHTS.geography, applicability: "unknown", score: null, evidenceQuality: 0, tenderEvidence: evidence(tender, tender.address ?? tender.contractObject), explanation: "Kompania nuk ka deklaruar ende zonat e shërbimit." });
@@ -297,9 +284,7 @@ function preferenceCriterion(tender: TenderNotice, model: CompanyCapabilityModel
 function componentProjection(criteria: ScoringCriterionResult[]): MatchComponents {
   const contribution = (key: ScoringCriterionResult["key"]) => Math.round(criteria.find((item) => item.key === key)?.contribution ?? 0);
   const delivery = criteria.find((item) => item.key === "delivery");
-  const peopleShare = delivery ? Math.round(delivery.contribution * 0.76) : 0;
-  const equipmentShare = delivery ? Math.round(delivery.contribution - peopleShare) : 0;
-  return { scope: contribution("scope"), compliance: 0, experience: contribution("experience"), people: peopleShare, equipment: equipmentShare, financial: contribution("financial"), geography: contribution("geography"), schedule: contribution("schedule"), preference: contribution("preference") };
+  return { scope: contribution("scope"), compliance: 0, experience: contribution("experience"), people: Math.round(delivery?.contribution ?? 0), equipment: 0, financial: contribution("financial"), geography: contribution("geography"), schedule: contribution("schedule"), preference: contribution("preference") };
 }
 
 export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel: CompanyCapabilityModel | undefined, legacy: LegacyMatch, calibration: MatchCalibration = { adjustment: 0, evidenceCount: 0 }): TenderMatch {
@@ -312,18 +297,21 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
   const denominator = criteria.filter((item) => item.applicability !== "not_applicable").reduce((sum, item) => sum + item.weight, 0) || 100;
   const known = criteria.filter((item) => item.applicability === "applicable" && item.score != null && item.evidenceQuality > 0);
   const observedWeight = known.reduce((sum, item) => sum + item.weight * item.evidenceQuality, 0);
-  const observedFit = observedWeight ? known.reduce((sum, item) => sum + item.weight * item.evidenceQuality * (item.score ?? 0), 0) / observedWeight : 50;
+  const observedFit = observedWeight ? known.reduce((sum, item) => sum + item.weight * item.evidenceQuality * (item.score ?? 0), 0) / observedWeight : 0;
   const coverage = clamp(observedWeight / denominator, 0, 1);
-  const trust = 0.35 + 0.65 * coverage;
-  const boundedAdjustment = calibration.evidenceCount >= 5 ? clamp(calibration.adjustment, -5, 5) : 0;
-  let score = rounded(50 + (observedFit - 50) * trust + boundedAdjustment);
+  // Relevance feedback is retained for future feed ordering, but it must not
+  // alter the technical suitability of a tender with different scope details.
+  const boundedAdjustment = 0;
+  // Evidence coverage is reported separately. A thin record can be promising,
+  // but it must not be pulled toward an invented neutral score of 50.
+  let score = rounded(observedFit);
   let fitRangeLow = rounded(criteria.reduce((sum, item) => sum + item.weight * item.lowerBound / 100, 0) / denominator * 100);
   let fitRangeHigh = rounded(criteria.reduce((sum, item) => sum + item.weight * item.upperBound / 100, 0) / denominator * 100);
   const confidenceScore = rounded(coverage * 100);
   const scopeResult = criteria.find((item) => item.key === "scope")!;
   // Schedule or geography can refine a suitable opportunity, but they must
   // never manufacture suitability when the company has not declared its work.
-  if (scopeResult.applicability === "unknown") score = Math.min(score, 50);
+  if (scopeResult.applicability === "unknown") score = 0;
 
   const explicitFailures = requirementMatches.filter((item) => ["missing", "expired", "unavailable"].includes(item.result) && item.confidence >= 0.85 && mandatoryContext(tender, item.tenderRequirement));
   const expiredDeadline = tender.submissionDeadline != null && Number.isFinite(Date.parse(tender.submissionDeadline)) && Date.parse(tender.submissionDeadline) <= Date.now();
@@ -361,7 +349,6 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
 
   const strongest = [...criteria].filter((item) => item.score != null).sort((a, b) => (b.contribution * b.evidenceQuality) - (a.contribution * a.evidenceQuality)).slice(0, 3);
   const reasons = strongest.map((item) => item.explanation);
-  if (boundedAdjustment) reasons.push(`Preferencat e mësuara nga ${calibration.evidenceCount} vlerësime ndryshuan renditjen me ${boundedAdjustment > 0 ? "+" : ""}${boundedAdjustment} pikë.`);
   const missingInformation = [...new Set([
     ...criteria.filter((item) => item.applicability === "unknown").map((item) => item.explanation),
     ...requirementMatches.filter((item) => item.result === "unknown").map((item) => item.explanation),

@@ -12,5 +12,8 @@ for (const name of requestedNames) {
   if (!allowedNames.has(name) || dirname(target) !== projectRoot || basename(target) !== name) {
     throw new Error(`Refusing to remove unsafe cache target: ${name}`);
   }
-  rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 });
+  // OneDrive and antivirus can briefly recreate or hold generated Next files.
+  // This remains constrained to the two explicit cache directories above, but
+  // waits long enough to avoid a flaky production build on Windows.
+  rmSync(target, { recursive: true, force: true, maxRetries: 12, retryDelay: 300 });
 }

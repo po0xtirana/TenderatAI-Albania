@@ -89,7 +89,8 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
       if (!response.ok) throw new Error(body.error ?? "Ruajtja dështoi.");
       lastSavedFingerprints.current[section] = fingerprint;
       setReadiness(body.readiness);
-      setModel((current) => ({ ...current, draftUpdatedAt: body.model.draftUpdatedAt }));
+      setModel((current) => ({ ...current, status: body.model.status, activeVersion: body.model.activeVersion, draftUpdatedAt: body.model.draftUpdatedAt }));
+      if (body.publishedVersion) setMessage(`Versioni ${body.publishedVersion.version} u përditësua automatikisht. Tenderat u rillogaritën me të dhënat e reja.`);
     });
     saveQueue.current = operation.then(() => undefined, () => undefined);
     return operation;
@@ -144,7 +145,8 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
     try {
       if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null; }
       await persistSection(activeStep, modelRef.current, true);
-      setAutosaveStatus("saved"); setMessage("Ndryshimet u ruajtën si draft. Renditja aktive nuk ka ndryshuar.");
+      setAutosaveStatus("saved");
+      if (!message) setMessage(modelRef.current.status === "active" ? "Ndryshimet u ruajtën dhe renditja u përditësua automatikisht." : "Ndryshimet u ruajtën. Plotësoni bllokuesit për ta aktivizuar profilin për herë të parë.");
       if (continueNext && currentIndex < steps.length - 1) setActiveStep(steps[currentIndex + 1].key);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Ruajtja dështoi."); }
     finally { setSaving(false); }
@@ -172,7 +174,7 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
 
     <main className="cap-shell">
       <section className="cap-overview">
-        <div><p className="eyebrow">PROFILI QË UDHËHEQ ÇDO REKOMANDIM</p><h1>Kapacitetet e kompanisë</h1><p>Dokumentoni çfarë mund të realizojë kompania, me cilët njerëz, pajisje dhe kufij. Tenderat AI përdor vetëm versionin që aktivizoni.</p></div>
+        <div><p className="eyebrow">PROFILI QË UDHËHEQ ÇDO REKOMANDIM</p><h1>Kapacitetet e kompanisë</h1><p>Dokumentoni çfarë mund të realizojë kompania, me cilët njerëz, pajisje dhe kufij. Ndryshimet e plota përditësojnë automatikisht renditjen; rreshtat e papërfunduar mbeten draft.</p></div>
         <div className="readiness-panel">
           <div className="readiness-dial" style={{ "--readiness": `${readiness.overallScore}%` } as React.CSSProperties}><strong>{readiness.overallScore}%</strong><span>gatishmëri</span></div>
           <div><b>{readiness.readyForMatching ? "Gati për aktivizim" : `${readiness.blockingItems.length} bllokues për t’u zgjidhur`}</b><p>{readiness.warningItems.length} paralajmërime · {readiness.expiredItems.length} dokumente të skaduara · {readiness.staleItems.length} të dhëna të vjetra</p></div>
@@ -192,7 +194,7 @@ export function CapabilityWorkspace({ initialModel, initialReadiness }: { initia
               <span><b>{step.title}</b><small>{step.short}</small></span><em>{score}%</em>
             </button>;
           })}
-          <div className="stepper-summary"><span>STATUSI</span><b>{model.status === "active" ? `Aktiv · v${model.activeVersion}` : "Draft i paaktivizuar"}</b><small>Ruajtja nuk ndryshon renditjen derisa ta aktivizoni.</small></div>
+          <div className="stepper-summary"><span>STATUSI</span><b>{model.status === "active" ? `Aktiv · v${model.activeVersion}` : "Draft i paaktivizuar"}</b><small>{model.status === "active" ? "Ndryshimet e plota publikohen automatikisht." : "Plotësoni bllokuesit për aktivizimin e parë."}</small></div>
         </aside>
 
         <section className="cap-editor">

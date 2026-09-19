@@ -230,6 +230,9 @@ export type AllocationSource = "internal" | "partner" | "rental" | "hybrid" | "u
 export type TenderWorkPackage = {
   id: string; phase: string; task: string; quantity: number | null; unit: string | null; requirements: string[];
   source: WorkPackageSource; sourcePage: number; evidenceText: string; confidence: number; verificationStatus: WorkPackageVerification;
+  scopeMatch?: "exact" | "equivalent" | "broad" | "partner" | "unmatched" | "unknown";
+  deliveryStatus?: "confirmed_internal" | "confirmed_partner" | "relevant_unverified" | "uncovered" | "unknown";
+  matchedCapability?: string | null; resourceEvidence?: string[];
 };
 
 export type TenderWorkAllocation = {
@@ -241,7 +244,10 @@ export type TenderWorkAllocation = {
 export type TenderDeliveryPlan = {
   tenderId: string; workPackages: TenderWorkPackage[]; allocations: TenderWorkAllocation[]; generatedAt: string;
   capabilityVersion: number; capabilityUpdatedAt?: string; plannerVersion?: string;
-  summary: { internalPercent: number; partnerPercent: number; rentalCount: number; uncoveredCount: number; provisionalCount: number };
+  summary: {
+    internalPercent: number; partnerPercent: number; rentalCount: number; uncoveredCount: number; provisionalCount: number;
+    componentCount?: number; internalConfirmedCount?: number; partnerConfirmedCount?: number; unverifiedCount?: number;
+  };
 };
 
 export type TenderRecommendation = "proceed" | "conditional" | "partner_required" | "high_risk" | "do_not_proceed";

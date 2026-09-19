@@ -575,9 +575,9 @@ function DecisionBriefSection({ brief, tenderId, deliveryPlan, onChange }: { bri
       </div>
     </div>
     <div className="delivery-decision-summary">
-      <div><p className="eyebrow">3 · PUNË E BRENDSHME</p><b>{deliveryPlan?.summary.internalPercent ?? 0}%</b><span>e fazave mund të realizohen me kapacitetet e kompanisë.</span></div>
-      <div><p className="eyebrow">4 · PARTNERË DHE QIRA</p><b>{deliveryPlan?.summary.partnerPercent ?? 0}%</b><span>kërkon partnerë · {deliveryPlan?.summary.rentalCount ?? 0} nevoja për qira.</span></div>
-      <div className={(deliveryPlan?.summary.uncoveredCount ?? 0) > 0 ? "uncovered" : ""}><p className="eyebrow">MBULIM I PAKONFIRMUAR</p><b>{deliveryPlan?.summary.uncoveredCount ?? 0}</b><span>faza që kërkojnë zgjidhje para ofertës.</span></div>
+      <div><p className="eyebrow">3 · PUNË E BRENDSHME</p><b>{deliveryPlan?.summary.internalConfirmedCount ?? 0}/{deliveryPlan?.summary.componentCount ?? 0}</b><span>komponentë me specializim dhe personel të konfirmuar.</span></div>
+      <div><p className="eyebrow">4 · PARTNERË DHE QIRA</p><b>{deliveryPlan?.summary.partnerConfirmedCount ?? 0}/{deliveryPlan?.summary.componentCount ?? 0}</b><span>komponentë të mbuluar nga partnerë · {deliveryPlan?.summary.rentalCount ?? 0} alternativa qiraje.</span></div>
+      <div className={(deliveryPlan?.summary.uncoveredCount ?? 0) > 0 ? "uncovered" : ""}><p className="eyebrow">PËR VERIFIKIM</p><b>{(deliveryPlan?.summary.unverifiedCount ?? 0) + (deliveryPlan?.summary.uncoveredCount ?? 0)}</b><span>komponentë me kapacitet relevant ose zgjidhje ende të pakonfirmuar.</span></div>
     </div>
     <div className="brief-workflow-grid">
       <div className="brief-issues"><div className="brief-section-head"><div><p className="eyebrow">5 · ÇFARË MUND TË NDALOJË PJESËMARRJEN</p><h3>Bllokues, rreziqe dhe të panjohura</h3></div><span>{openIssues.length} të hapura</span></div>{openIssues.length ? <div className="brief-issue-list">{openIssues.slice(0, 6).map((item) => <article className={`brief-issue issue-${item.type}`} key={item.id}><span>{item.type === "blocker" ? "!" : item.type === "risk" ? "△" : "?"}</span><div><b>{item.title}</b><p>{item.description}</p><small>{item.resolution}</small></div></article>)}</div> : <p className="brief-success">✓ Nuk ka bllokues ose rreziqe të hapura në këtë analizë.</p>}</div>
@@ -612,6 +612,21 @@ const verificationLabels: Record<
   provisional: "Paraprake",
   extracted: "Nga dokumentet",
   confirmed: "Konfirmuar",
+};
+const scopeMatchLabels: Record<NonNullable<TenderDeliveryPlan["workPackages"][number]["scopeMatch"]>, string> = {
+  exact: "Përputhje e drejtpërdrejtë",
+  equivalent: "Përputhje e ngjashme",
+  broad: "Fushë e përgjithshme",
+  partner: "Mbulim nga partneri",
+  unmatched: "Pa specializim të deklaruar",
+  unknown: "Kërkon interpretim",
+};
+const deliveryStatusLabels: Record<NonNullable<TenderDeliveryPlan["workPackages"][number]["deliveryStatus"]>, string> = {
+  confirmed_internal: "E konfirmuar brenda kompanisë",
+  confirmed_partner: "E konfirmuar nga partneri",
+  relevant_unverified: "Kapacitet relevant · verifiko personelin",
+  uncovered: "Pa mbulim të konfirmuar",
+  unknown: "Kërkon verifikim",
 };
 
 function DeliveryPlanSection({
@@ -663,8 +678,9 @@ function DeliveryPlanSection({
           <p className="eyebrow">PLAN I REALIZIMIT</p>
           <h2>Fazat e punës dhe përgjegjësit</h2>
           <p className="detail-card-copy">
-            Sistemi ndan detyrat mes kompanisë, partnerëve dhe makinerive me
-            qira. Konfirmoni sugjerimet para ofertës.
+            Çdo komponent kontrollohet veçmas: specializimi, personeli i
+            disponueshëm, partnerët dhe provat nga buletini. Përqindjet nuk
+            përdoren kur dokumenti nuk jep sasi ose afate të plota.
           </p>
         </div>
         <span className="verified">
@@ -673,16 +689,16 @@ function DeliveryPlanSection({
       </div>
       <div className="delivery-summary">
         <span>
-          <b>{plan.summary.internalPercent}%</b> kompani
+          <b>{plan.summary.internalConfirmedCount ?? 0}/{plan.summary.componentCount ?? 0}</b> kompani
         </span>
         <span>
-          <b>{plan.summary.partnerPercent}%</b> partnerë
+          <b>{plan.summary.partnerConfirmedCount ?? 0}/{plan.summary.componentCount ?? 0}</b> partnerë
         </span>
         <span>
           <b>{plan.summary.rentalCount}</b> qira
         </span>
         <span className={plan.summary.uncoveredCount ? "warning" : ""}>
-          <b>{plan.summary.uncoveredCount}</b> pambuluara
+          <b>{(plan.summary.unverifiedCount ?? 0) + plan.summary.uncoveredCount}</b> për verifikim
         </span>
       </div>
       {error && (
@@ -717,7 +733,10 @@ function DeliveryPlanSection({
                   {workPackage.requirements.slice(0, 3).map((requirement) => (
                     <span key={requirement}>{requirement}</span>
                   ))}
+                  {workPackage.scopeMatch && <span>{scopeMatchLabels[workPackage.scopeMatch]}</span>}
+                  {workPackage.deliveryStatus && <span>{deliveryStatusLabels[workPackage.deliveryStatus]}</span>}
                 </div>
+                {workPackage.resourceEvidence?.length ? <p className="delivery-evidence">Prova e kapacitetit: {workPackage.resourceEvidence.join(" · ")}</p> : null}
                 <div className="delivery-allocations">
                   {plan.allocations
                     .filter(

@@ -141,7 +141,49 @@ function findTenderByReference(store: RuntimeStore, tender: TenderNotice): Tende
 function activeCapability(store: RuntimeStore): CompanyCapabilityModel {
   const version = [...store.capabilityVersions].sort((a, b) => b.version - a.version)[0];
   if (!version) return store.capability;
-  return { ...structuredClone(version.snapshot), status: "active", activeVersion: version.version, draftUpdatedAt: store.capability.draftUpdatedAt, documents: store.capability.documents };
+  // A draft can be saved while a colleague is still editing it. Rankings must
+  // remain tied to the immutable active snapshot until a valid update is
+  // published, otherwise an old plan appears current against new data.
+  return { ...structuredClone(version.snapshot), status: "active", activeVersion: version.version, draftUpdatedAt: version.activatedAt, documents: store.capability.documents };
+}
+
+function hasText(value: unknown): boolean { return typeof value === "string" && value.trim().length > 0; }
+
+/**
+ * A partial row is useful while someone is typing, but it must not become part
+ * of the live matching profile. This small completeness gate keeps a prior
+ * active version in force until the new operational record can be interpreted.
+ */
+function hasIncompleteCapabilityRecord(model: CompanyCapabilityModel): boolean {
+  const incomplete = (items: unknown[], meaningful: (item: any) => boolean, complete: (item: any) => boolean) => items.some((item) => meaningful(item) && !complete(item));
+  return incomplete(model.workCapabilities, (item) => hasText(item.trade) || item.cpvPrefixes.length > 0 || item.projectTypes.length > 0 || item.buildingTypes.length > 0, (item) => hasText(item.trade))
+    || incomplete(model.serviceAreas, (item) => hasText(item.region) || item.municipalities.length > 0, (item) => hasText(item.region))
+    || incomplete(model.keyPeople, (item) => hasText(item.fullName) || hasText(item.role), (item) => hasText(item.fullName) && hasText(item.role))
+    || incomplete(model.labourPools, (item) => hasText(item.role) || item.headcount > 0 || item.availableHeadcount > 0 || item.skills.length > 0, (item) => hasText(item.role) && item.headcount > 0)
+    || incomplete(model.crews, (item) => hasText(item.name) || hasText(item.workCategory) || item.roles.length > 0, (item) => hasText(item.name) && hasText(item.workCategory) && item.roles.some((role: { role: string; skill: string }) => hasText(role.role) || hasText(role.skill)))
+    || incomplete(model.equipment, (item) => hasText(item.name) || hasText(item.category) || item.quantity > 0 || item.availableQuantity > 0, (item) => hasText(item.name) && hasText(item.category) && item.quantity > 0)
+    || incomplete(model.referenceProjects, (item) => hasText(item.title) || item.cpvCodes.length > 0 || item.workTypes.length > 0, (item) => hasText(item.title))
+    || incomplete(model.partners, (item) => hasText(item.name) || item.categories.length > 0 || (item.capabilities?.length ?? 0) > 0, (item) => hasText(item.name) && (item.categories.length > 0 || (item.capabilities ?? []).some((capability: { name: string; category: string }) => hasText(capability.name) || hasText(capability.category))));
+}
+
+function publishCapabilityVersion(store: RuntimeStore): CapabilityVersion {
+  const readiness = calculateReadiness(store.capability);
+  const nextVersion = Math.max(0, ...store.capabilityVersions.map((item) => item.version)) + 1;
+  const activatedAt = new Date().toISOString();
+  store.capability.status = "active";
+  store.capability.activeVersion = nextVersion;
+  store.capability.draftUpdatedAt = activatedAt;
+  const version: CapabilityVersion = { id: randomUUID(), version: nextVersion, activatedAt, readinessScore: readiness.overallScore, snapshot: capabilitySnapshot(store.capability) };
+  store.capabilityVersions.push(version);
+  store.company = capabilityToLegacy(store.capability);
+  rematchStore(store, { regenerateDelivery: true });
+  return version;
+}
+
+function shouldAutoPublish(model: CompanyCapabilityModel): boolean {
+  // The first profile still needs the readiness baseline. Once that baseline
+  // exists, every complete operational update is live automatically.
+  return !hasIncompleteCapabilityRecord(model) && (model.status === "active" || calculateReadiness(model).readyForMatching);
 }
 
 function persist(store: RuntimeStore): void {
@@ -175,7 +217,9 @@ function restoreFromSaved(saved: PersistedState, restoredFiles = new Map<string,
     for (const savedRecord of saved.tenders ?? []) {
       const bulletin = base.bulletins.find((item) => item.id === savedRecord.tender.bulletinId) ?? savedRecord.bulletin;
       const match = applyRelevanceFeedback(matchTender(savedRecord.tender, company, active, feedbackCalibration(savedRecord.tender, saved.tenders ?? [])), savedRecord.relevanceFeedback);
-      const deliveryPlan = savedRecord.deliveryPlan ? recalculateDeliverySummary(savedRecord.deliveryPlan) : generateDeliveryPlan(savedRecord.tender, active);
+      const deliveryPlan = savedRecord.deliveryPlan && deliveryPlanIsCurrent(savedRecord.deliveryPlan, active)
+        ? recalculateDeliverySummary(savedRecord.deliveryPlan)
+        : generateDeliveryPlan(savedRecord.tender, active);
       base.tenders.set(savedRecord.tender.id, { ...savedRecord, bulletin, match, insights: refreshedInsights({ tender: savedRecord.tender, match, insights: savedRecord.insights ?? [] }), workflowStatus: savedRecord.workflowStatus ?? "new", deliveryPlan, relevanceFeedback: savedRecord.relevanceFeedback ?? null });
     }
     dedupeTenderRecords(base);
@@ -393,7 +437,7 @@ export function getCapabilities(): { model: CompanyCapabilityModel; readiness: C
 }
 export function getCapabilityVersions(): CapabilityVersion[] { return structuredClone([...runtime().capabilityVersions].sort((a, b) => b.version - a.version)); }
 
-export function updateCapabilitySection(section: CapabilitySectionKey, payload: Record<string, unknown>): { model: CompanyCapabilityModel; readiness: CapabilityReadiness } {
+export function updateCapabilitySection(section: CapabilitySectionKey, payload: Record<string, unknown>): { model: CompanyCapabilityModel; readiness: CapabilityReadiness; publishedVersion: CapabilityVersion | null } {
   const store = runtime();
   const model = store.capability;
   validateCapabilitySection(section, payload);
@@ -410,20 +454,16 @@ export function updateCapabilitySection(section: CapabilitySectionKey, payload: 
   else if (section === "rules") { if (payload.bidPreferences) model.bidPreferences = payload.bidPreferences as CompanyCapabilityModel["bidPreferences"]; if (payload.commitments) model.commitments = payload.commitments as CompanyCapabilityModel["commitments"]; }
   else throw new Error("Seksioni ose të dhënat nuk janë të vlefshme.");
   model.draftUpdatedAt = new Date().toISOString();
+  const publishedVersion = shouldAutoPublish(model) ? publishCapabilityVersion(store) : null;
   persist(store);
-  return { model: structuredClone(model), readiness: calculateReadiness(model) };
+  return { model: structuredClone(model), readiness: calculateReadiness(model), publishedVersion: publishedVersion ? structuredClone(publishedVersion) : null };
 }
 
 export function activateCapabilities(): { model: CompanyCapabilityModel; readiness: CapabilityReadiness; version: CapabilityVersion } {
   const store = runtime(); const readiness = calculateReadiness(store.capability);
   if (!readiness.readyForMatching) throw new Error("Profili ka ende bllokues. Plotësoni fushat e detyrueshme para aktivizimit.");
-  const nextVersion = Math.max(0, ...store.capabilityVersions.map((item) => item.version)) + 1;
-  store.capability.status = "active"; store.capability.activeVersion = nextVersion; store.capability.draftUpdatedAt = new Date().toISOString();
-  const version: CapabilityVersion = { id: randomUUID(), version: nextVersion, activatedAt: new Date().toISOString(), readinessScore: readiness.overallScore, snapshot: capabilitySnapshot(store.capability) };
-  store.capabilityVersions.push(version);
-  store.company = capabilityToLegacy(store.capability);
-  const active = activeCapability(store);
-  rematchStore(store, { regenerateDelivery: true });
+  if (hasIncompleteCapabilityRecord(store.capability)) throw new Error("Plotësoni ose hiqni regjistrimet e papërfunduara para aktivizimit.");
+  const version = publishCapabilityVersion(store);
   persist(store);
   return { model: structuredClone(store.capability), readiness, version: structuredClone(version) };
 }

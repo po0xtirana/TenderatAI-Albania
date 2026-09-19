@@ -29,7 +29,10 @@ const DAY = 86_400_000;
 
 const clamp = (value: number, max = 100) => Math.max(0, Math.min(max, Math.round(value)));
 const textIncludes = (text: string, value: string) => Boolean(value) && text.includes(normalize(value));
-const matches = (left: string, right: string) => normalize(left).includes(normalize(right)) || normalize(right).includes(normalize(left));
+const matches = (left: string, right: string) => {
+  const a = normalize(left); const b = normalize(right);
+  return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a));
+};
 const onOrBeforeToday = (value: string | null | undefined) => !value || !Number.isFinite(Date.parse(value)) || Date.parse(value) <= Date.now();
 const notExpired = (value: string | null | undefined) => !value || !Number.isFinite(Date.parse(value)) || Date.parse(value) >= Date.now();
 
