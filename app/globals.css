@@ -315,6 +315,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .delivery-phases { gap: 18px; padding: 0 25px 25px; }
 .delivery-phase { padding-top: 17px; }
 .delivery-phase h3 { font-size: 15px; }
+.delivery-phase-overview { max-width: 860px; margin: 0 0 11px; border-left: 3px solid #74aeb5; padding: 8px 11px; color: #4e687a; background: #f2f8f9; font-size: 10px; line-height: 1.55; }
 .delivery-package { padding: 15px; border-radius: 11px; background: #fbfcfe; }
 .delivery-package-head > div { min-width: 0; }
 .delivery-package-head b { color: #263f58; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }

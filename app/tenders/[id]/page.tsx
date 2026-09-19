@@ -629,6 +629,17 @@ const deliveryStatusLabels: Record<NonNullable<TenderDeliveryPlan["workPackages"
   unknown: "Kërkon verifikim",
 };
 
+function phaseOverview(packages: TenderDeliveryPlan["workPackages"]): string {
+  const tasks = [...new Set(packages.map((item) => item.task).filter(Boolean))];
+  const listedTasks = tasks.length <= 3 ? tasks.join(", ") : `${tasks.slice(0, 3).join(", ")} dhe ${tasks.length - 3} komponentë të tjerë`;
+  const pages = [...new Set(packages.map((item) => item.sourcePage).filter((page) => Number.isFinite(page)))].sort((a, b) => a - b);
+  const inferredOnly = packages.every((item) => item.source === "inference");
+  const source = inferredOnly
+    ? "Kjo është një përmbledhje paraprake nga objekti dhe kodet CPV; kontrolloni dokumentet e plota para ofertës."
+    : `Përmbledhja bazohet në njoftimin e nxjerrë nga ${pages.length === 1 ? `faqja ${pages[0]}` : `faqet ${pages.join(", ")}`}.`;
+  return `${inferredOnly ? "Mund të përfshijë" : "Përfshin"} ${listedTasks}. ${source}`;
+}
+
 function DeliveryPlanSection({
   plan,
   tenderId,
@@ -710,6 +721,7 @@ function DeliveryPlanSection({
         {Object.entries(grouped).map(([phase, packages]) => (
           <div className="delivery-phase" key={phase}>
             <h3>{phase}</h3>
+            <p className="delivery-phase-overview">{phaseOverview(packages)}</p>
             {packages.map((workPackage) => (
               <article className="delivery-package" key={workPackage.id}>
                 <div className="delivery-package-head">
