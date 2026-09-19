@@ -240,7 +240,8 @@ export type TenderWorkAllocation = {
 
 export type TenderDeliveryPlan = {
   tenderId: string; workPackages: TenderWorkPackage[]; allocations: TenderWorkAllocation[]; generatedAt: string;
-  capabilityVersion: number; summary: { internalPercent: number; partnerPercent: number; rentalCount: number; uncoveredCount: number; provisionalCount: number };
+  capabilityVersion: number; capabilityUpdatedAt?: string; plannerVersion?: string;
+  summary: { internalPercent: number; partnerPercent: number; rentalCount: number; uncoveredCount: number; provisionalCount: number };
 };
 
 export type TenderRecommendation = "proceed" | "conditional" | "partner_required" | "high_risk" | "do_not_proceed";

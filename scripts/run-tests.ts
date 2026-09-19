@@ -145,6 +145,24 @@ for (const crew of unavailableInternalModel.crews) crew.availableCrewCount = 0;
 for (const pool of unavailableInternalModel.labourPools) pool.availableHeadcount = 0;
 const unavailableInternalPlan = generateDeliveryPlan(snapshot.tenders[0].tender, unavailableInternalModel);
 assert.equal(unavailableInternalPlan.allocations.some((item) => item.source === "internal"), false, "a declared trade without an available crew or labour pool must not be presented as internally executable");
+const portGateTender = structuredClone(snapshot.tenders[0].tender);
+portGateTender.id = "port-gate-regression";
+portGateTender.contractObject = "Zhvendosja e Portës 4 (Projektim+Zbatim)";
+portGateTender.cpvCodes = ["45210000-2", "45311000-0", "45316200-7"];
+portGateTender.sourceText = `${portGateTender.contractObject} ${portGateTender.cpvCodes.join(" ")}`;
+const portGateModel = structuredClone(capabilityBefore.model);
+portGateModel.crews = [];
+portGateModel.workCapabilities = [{ ...portGateModel.workCapabilities[0], trade: "Ndertim", deliveryMethod: "both", cpvPrefixes: ["45210000"] }];
+portGateModel.labourPools = [
+  { ...portGateModel.labourPools[0], id: "murator-regression", role: "Murator", skills: [], headcount: 2, availableHeadcount: 2, active: true, availableFrom: null },
+  { ...portGateModel.labourPools[0], id: "electrician-regression", role: "Elekritcist", skills: [], headcount: 2, availableHeadcount: 2, active: true, availableFrom: null },
+];
+const portGatePlan = generateDeliveryPlan(portGateTender, portGateModel);
+assert.equal(portGatePlan.workPackages.some((item) => item.task === "Ndërtim ndërtesash"), true, "building CPV must create a building package");
+assert.equal(portGatePlan.workPackages.some((item) => item.task === "Instalime elektrike"), true, "related electrical CPVs must create an electrical package");
+assert.equal(portGatePlan.summary.internalPercent, 100, "available construction and electrical labour must be recognized as internal capacity");
+const portGateMatch = matchTender(portGateTender, snapshot.company, portGateModel);
+assert.equal((portGateMatch.criterionResults?.find((item) => item.key === "delivery")?.score ?? 0) >= 90, true, "delivery scoring must agree with the internal delivery plan");
 const firstAllocation = initialPlan.allocations.find((item) => item.source !== "rental");
 assert.ok(firstAllocation);
 assert.equal(updateTenderDeliveryAllocation(snapshot.tenders[0].tender.id, firstAllocation.id, { status: "confirmed" })?.deliveryPlan?.allocations.find((item) => item.id === firstAllocation.id)?.status, "confirmed");

@@ -43,7 +43,13 @@ export async function cloudSnapshot(options: Parameters<typeof getSnapshot>[0] =
   return getSnapshot(options);
 }
 
-export async function cloudTender(id: string): Promise<TenderRecord | null> { await loadState(); return getTender(id); }
+export async function cloudTender(id: string): Promise<TenderRecord | null> {
+  const { client, userId } = await loadState();
+  const before = getSnapshot({ period: "all" }).tenders.find((item) => item.tender.id === id)?.deliveryPlan;
+  const value = getTender(id);
+  if (value?.deliveryPlan && (before?.plannerVersion !== value.deliveryPlan.plannerVersion || before?.capabilityUpdatedAt !== value.deliveryPlan.capabilityUpdatedAt)) await saveState(client, userId);
+  return value;
+}
 export async function cloudCapabilities(): Promise<{ model: CompanyCapabilityModel; readiness: CapabilityReadiness }> { await loadState(); return getCapabilities(); }
 export async function cloudCapabilityVersions(): Promise<CapabilityVersion[]> { await loadState(); return getCapabilityVersions(); }
 export async function cloudReadiness(): Promise<CapabilityReadiness> { return (await cloudCapabilities()).readiness; }

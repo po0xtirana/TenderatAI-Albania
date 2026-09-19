@@ -9,7 +9,7 @@ import { matchTender } from "./matcher";
 import type { MatchCalibration } from "./matcher-v2";
 import { normalize } from "./normalize";
 import { authorityFacets, authorityMatches } from "./authority-catalog";
-import { generateDeliveryPlan, recalculateDeliverySummary, updateAllocation } from "./delivery-plan";
+import { deliveryPlanIsCurrent, generateDeliveryPlan, recalculateDeliverySummary, updateAllocation } from "./delivery-plan";
 import { generateDecisionBrief } from "./decision-brief";
 import { validateCapabilitySection } from "./capability-validation";
 import { calculateReadiness, capabilitySnapshot, capabilityToLegacy, demoCapabilityModel, emptyCapabilityModel } from "./capabilities";
@@ -345,7 +345,9 @@ export function getSnapshot(options: { period?: "30d" | "90d" | "all"; decision?
 export function getTender(id: string): TenderRecord | null {
   const store = runtime(); const record = store.tenders.get(id); if (!record) return null;
   let changed = false;
-  if (!record.deliveryPlan) { record.deliveryPlan = generateDeliveryPlan(record.tender, activeCapability(store)); changed = true; }
+  const active = activeCapability(store);
+  const hasReviewedAllocations = record.deliveryPlan?.allocations.some((item) => item.status !== "suggested") ?? false;
+  if (!record.deliveryPlan || (!hasReviewedAllocations && !deliveryPlanIsCurrent(record.deliveryPlan, active))) { record.deliveryPlan = generateDeliveryPlan(record.tender, active); changed = true; }
   else record.deliveryPlan = recalculateDeliverySummary(record.deliveryPlan);
   const nextBrief = generateDecisionBrief(record, record.decisionBrief);
   if (!record.decisionBrief) changed = true;

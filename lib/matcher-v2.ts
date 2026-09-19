@@ -1,6 +1,7 @@
 import { emptyCapabilityModel } from "./capabilities";
 import { searchTermsForCpvCodes } from "./cpv-catalog";
 import { normalize } from "./normalize";
+import { generateDeliveryPlan } from "./delivery-plan";
 import type {
   CapabilityRequirementMatch,
   CompanyCapabilityModel,
@@ -192,37 +193,25 @@ function scopeCriterion(tender: TenderNotice, model: CompanyCapabilityModel, pro
 }
 
 function deliveryCriterion(tender: TenderNotice, model: CompanyCapabilityModel, legacy: LegacyMatch): ScoringCriterionResult {
-  const terms = detectedWorkTerms(tender);
-  const text = sourceText(tender);
-  const availableCrews = model.crews.filter((crew) => crew.active && crew.availableCrewCount > 0 && datesAvailable(crew.availableFrom));
-  const relevantCrews = availableCrews.filter((crew) => terms.some((term) => textIncludes(normalize(`${crew.workCategory} ${crew.roles.map((role) => `${role.role} ${role.skill}`).join(" ")}`), term)) || textIncludes(text, crew.workCategory));
-  const relevantLabour = model.labourPools.filter((pool) => pool.active && pool.availableHeadcount > 0 && datesAvailable(pool.availableFrom) && [pool.role, ...pool.skills].some((value) => terms.some((term) => normalize(value).includes(normalize(term))) || textIncludes(text, value)));
-  const relevantPeople = model.keyPeople.filter((person) => person.active && person.availabilityPercent > 0 && datesAvailable(person.availableFrom) && [person.role, person.discipline, ...person.skills].some((value) => textIncludes(text, value)));
-  const relevantPartners = activeApprovedPartners(model).filter((partner) => partnerMatchesTender(partner, tender));
-  const partnerCapacity = relevantPartners.filter((partner) => {
-    const capabilities = partner.capabilities?.filter((item) => item.active) ?? [];
-    return !capabilities.length || capabilities.some((item) => (item.headcount > 0 || item.crewCount > 0) && datesAvailable(item.availableFrom));
-  });
+  const plan = generateDeliveryPlan(tender, model);
   const explicit = legacy.requirementMatches.filter((item) => ["personnel", "equipment"].includes(item.requirementType) && mandatoryContext(tender, item.tenderRequirement));
   const confirmed = explicit.filter((item) => item.result === "confirmed").length;
-  const companyEvidence = [
-    ...relevantCrews.map((item) => `${item.name}: ${item.availableCrewCount} ekip/e të lirë`),
-    ...relevantLabour.map((item) => `${item.role}: ${item.availableHeadcount} të lirë`),
-    ...relevantPeople.map((item) => `${item.fullName}: ${item.role}`),
-    ...partnerCapacity.map((item) => `${item.name}: partner i aprovuar`),
-  ];
+  const companyEvidence = plan.allocations.filter((item) => item.source !== "uncovered" && item.source !== "rental").map((item) => item.companyCapability ?? item.partnerName ?? item.rationale).filter(Boolean);
   if (!explicit.length && !companyEvidence.length && !model.workCapabilities.length) return makeCriterion({ key: "delivery", label: "Kapaciteti i realizimit", weight: WEIGHTS.delivery, applicability: "unknown", score: null, evidenceQuality: 0, tenderEvidence: evidence(tender), explanation: "Nuk ka të dhëna të mjaftueshme për njerëzit, ekipet, pajisjet ose partnerët." });
   let score: number; let quality: number; let explanation: string;
   if (explicit.length) {
     score = 100 * confirmed / explicit.length;
     quality = Math.min(0.95, explicit.reduce((sum, item) => sum + item.confidence, 0) / explicit.length);
     explanation = `${confirmed} nga ${explicit.length} kërkesa të shprehura për personel ose pajisje mbulohen.`;
-  } else if (relevantCrews.length || relevantLabour.length || partnerCapacity.length) {
-    score = 90; quality = 0.68 - freshnessPenalty(model);
-    explanation = partnerCapacity.length && !relevantCrews.length && !relevantLabour.length ? "Kapaciteti mbulohet nga partnerë të aprovuar; disponueshmëria përfundimtare duhet konfirmuar." : "Profili aktiv ka njerëz, ekipe ose partnerë të përshtatshëm dhe të disponueshëm.";
-  } else if (relevantPeople.length || model.workCapabilities.length) {
+  } else if (plan.summary.internalPercent > 0 || plan.summary.partnerPercent > 0) {
+    score = Math.round(plan.summary.internalPercent * 0.95 + plan.summary.partnerPercent * 0.75);
+    quality = Math.max(0.35, Math.min(0.82, plan.workPackages.reduce((sum, item) => sum + item.confidence, 0) / Math.max(1, plan.workPackages.length) - freshnessPenalty(model)));
+    explanation = plan.summary.internalPercent === 100
+      ? "Të gjitha paketat e identifikuara mbulohen nga kapaciteti i brendshëm i disponueshëm."
+      : `${plan.summary.internalPercent}% mbulohet brenda kompanisë dhe ${plan.summary.partnerPercent}% nga partnerë të aprovuar; pjesa tjetër kërkon verifikim.`;
+  } else if (model.workCapabilities.length) {
     score = 60; quality = 0.45 - freshnessPenalty(model);
-    explanation = "Fusha është deklaruar, por buletini nuk jep sasi dhe formacioni i nevojshëm nuk mund të konfirmohet ende.";
+    explanation = "Fusha është deklaruar, por nuk u gjet staf, ekip ose partner i disponueshëm për paketat e identifikuara.";
   } else {
     score = 35; quality = 0.5;
     explanation = "Nuk u gjet kapacitet realizimi i lidhur qartë me objektin e tenderit.";

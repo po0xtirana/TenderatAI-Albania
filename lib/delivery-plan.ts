@@ -4,6 +4,41 @@ import type { CapabilityPartner, CompanyCapabilityModel, TenderDeliveryPlan, Ten
 
 type PackageSeed = { phase: string; task: string; cpv: string; requirements: string[]; confidence: number };
 
+export const DELIVERY_PLANNER_VERSION = "capacity-taxonomy-v2";
+
+const ROLE_FAMILIES: Array<{ cpvPrefixes: string[]; terms: string[] }> = [
+  { cpvPrefixes: ["4521"], terms: ["murator", "karpentier", "marangoz", "hekur kthyes", "betonist", "punetor krahu", "inxhinier ndertimi"] },
+  { cpvPrefixes: ["4526"], terms: ["karpentier", "marangoz", "catipunues", "cati", "hidroizol", "llamarin"] },
+  { cpvPrefixes: ["452623"], terms: ["betonist", "hekur kthyes", "karpentier", "punetor krahu"] },
+  { cpvPrefixes: ["452625"], terms: ["murator", "murature", "punetor krahu"] },
+  { cpvPrefixes: ["4531"], terms: ["elektr", "elekrit", "ndricim", "kabll"] },
+  { cpvPrefixes: ["4533", "45232"], terms: ["hidraul", "ujesjelles", "kanaliz", "tubacion"] },
+  { cpvPrefixes: ["4541", "4543", "4544", "4545"], terms: ["bojaxhi", "suvat", "fasad", "pllaka", "murator", "karpentier", "punetor krahu"] },
+  { cpvPrefixes: ["4511"], terms: ["prish", "demolim", "punetor krahu", "operator"] },
+  { cpvPrefixes: ["4523"], terms: ["rruge", "asfalt", "operator", "shofer", "punetor krahu", "hidraul"] },
+];
+
+const digits = (value: string) => value.replace(/\D/g, "").slice(0, 8);
+const sharedCpvPrefix = (left: string, right: string) => {
+  const a = digits(left); const b = digits(right); let shared = 0;
+  while (shared < a.length && shared < b.length && a[shared] === b[shared]) shared += 1;
+  return shared;
+};
+const cpvRelated = (left: string, right: string, minimumPrefix = 4) => {
+  const a = digits(left); const b = digits(right);
+  if (!a || !b) return false;
+  if (a.startsWith(b) || b.startsWith(a)) return true;
+  return sharedCpvPrefix(a, b) >= minimumPrefix;
+};
+
+function resourceSupports(seed: PackageSeed, values: string[]): boolean {
+  const resourceText = normalize(values.filter(Boolean).join(" "));
+  if (!resourceText) return false;
+  const packageText = normalize(`${seed.task} ${seed.requirements.join(" ")}`);
+  if (values.some((value) => value && (packageText.includes(normalize(value)) || normalize(value).includes(packageText)))) return true;
+  return ROLE_FAMILIES.some((family) => family.cpvPrefixes.some((prefix) => digits(seed.cpv).startsWith(prefix)) && family.terms.some((term) => resourceText.includes(normalize(term))));
+}
+
 const phaseFor = (label: string) => {
   const value = normalize(label);
   if (/(cati|hidroizolim|ulluq)/.test(value)) return "Çati dhe hidroizolim";
@@ -16,7 +51,11 @@ const phaseFor = (label: string) => {
 
 function packageSeeds(tender: TenderNotice): PackageSeed[] {
   const suggestions = suggestCpvSpecializations(`${tender.contractObject} ${tender.cpvCodes.join(" ")}`, 8);
-  const fromCodes = CONSTRUCTION_CPV_CATALOG.filter((item) => tender.cpvCodes.some((code) => code.startsWith(item.code) || item.code.startsWith(code.slice(0, 8)))).map((item) => ({ ...item, score: 70, reason: "Kodi CPV i tenderit" }));
+  const fromCodes = tender.cpvCodes.flatMap((code) => {
+    const candidates = CONSTRUCTION_CPV_CATALOG.map((item) => ({ item, shared: sharedCpvPrefix(code, item.code) })).filter(({ shared }) => shared >= 4);
+    const best = Math.max(0, ...candidates.map(({ shared }) => shared));
+    return candidates.filter(({ shared }) => shared === best).map(({ item }) => ({ ...item, score: 70, reason: "Kodi CPV i tenderit" }));
+  });
   const unique = new Map<string, PackageSeed>();
   for (const item of [...fromCodes, ...suggestions]) {
     const key = item.code;
@@ -31,16 +70,24 @@ const availableNow = (value: string | null | undefined) => !value || !Number.isF
 
 function internalFit(seed: PackageSeed, model: CompanyCapabilityModel): { name: string; crew: string | null } | null {
   const taskText = normalize(`${seed.task} ${seed.requirements.join(" ")}`);
-  const found = model.workCapabilities.find((work) => {
-    if (!work.active || work.deliveryMethod === "subcontracted") return false;
-    return (seed.cpv && work.cpvPrefixes.some((prefix) => seed.cpv.startsWith(prefix) || prefix.startsWith(seed.cpv.slice(0, 4)))) || [work.trade, ...work.projectTypes, ...work.buildingTypes].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText)));
+  const eligibleWork = model.workCapabilities.filter((work) => work.active && work.deliveryMethod !== "subcontracted");
+  const directWork = eligibleWork.find((work) => {
+    return (seed.cpv && work.cpvPrefixes.some((prefix) => cpvRelated(seed.cpv, prefix))) || [work.trade, ...work.projectTypes, ...work.buildingTypes].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText)));
   });
+  const crew = model.crews.find((item) => item.active && item.availableCrewCount > 0 && availableNow(item.availableFrom) && resourceSupports(seed, [item.workCategory, item.name, ...item.roles.flatMap((role) => [role.role, role.skill])]));
+  const labour = model.labourPools.find((item) => item.active && item.availableHeadcount > 0 && availableNow(item.availableFrom) && resourceSupports(seed, [item.role, ...item.skills]));
+  if (!crew && !labour) return null;
+  // A specific available trade can support a package under a broader active
+  // construction capability even when the company has not entered every CPV
+  // subcategory separately (common with small Albanian contractors).
+  const umbrellaWork = !directWork && seed.cpv
+    ? eligibleWork.find((work) => work.cpvPrefixes.some((prefix) => digits(prefix).slice(0, 2) === digits(seed.cpv).slice(0, 2)))
+    : null;
+  const found = directWork ?? umbrellaWork;
   if (!found) return null;
-  const crew = model.crews.find((item) => item.active && item.availableCrewCount > 0 && availableNow(item.availableFrom) && [item.workCategory, item.name, ...item.roles.flatMap((role) => [role.role, role.skill])].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText))));
-  const labour = model.labourPools.find((item) => item.active && item.availableHeadcount > 0 && availableNow(item.availableFrom) && [item.role, ...item.skills].some((term) => term && (taskText.includes(normalize(term)) || normalize(term).includes(taskText))));
   // A declared specialism without a free crew or relevant labour is not yet an
   // executable internal allocation. The matcher may still show it as scope fit.
-  return crew || labour ? { name: found.trade, crew: crew?.name ?? null } : null;
+  return { name: found.trade, crew: crew?.name ?? labour?.role ?? null };
 }
 
 function partnerFit(seed: PackageSeed, partner: CapabilityPartner): { score: number; capability: string } | null {
@@ -95,10 +142,7 @@ export function generateDeliveryPlan(tender: TenderNotice, model: CompanyCapabil
     const partnerMatches = model.partners.map((partner) => ({ partner, fit: partnerFit(seed, partner) })).filter((item): item is { partner: CapabilityPartner; fit: { score: number; capability: string } } => Boolean(item.fit)).sort((a, b) => b.fit.score - a.fit.score);
     const bestPartner = partnerMatches[0];
     const rental = model.partners.map((partner) => ({ partner, resource: rentalFit(seed, partner) })).find((item) => item.resource);
-    if (internal && bestPartner) {
-      const hybrid = allocation(workPackage.id, "hybrid", 70, bestPartner.partner.id, null, internal.name, null, `Kompania mbulon pjesën kryesore; ${bestPartner.partner.name} plotëson ${bestPartner.fit.capability}.`, bestPartner.partner.dependencyRisk, 0.74); hybrid.partnerName = bestPartner.partner.name; allocations.push(hybrid);
-      const partnerAllocation = allocation(workPackage.id, "partner", 30, bestPartner.partner.id, null, null, null, `Partner i sugjeruar për pjesën specialistike: ${bestPartner.fit.capability}.`, bestPartner.partner.dependencyRisk, 0.74); partnerAllocation.partnerName = bestPartner.partner.name; allocations.push(partnerAllocation);
-    } else if (internal) {
+    if (internal) {
       allocations.push(allocation(workPackage.id, "internal", 100, null, null, internal.crew ? `${internal.name} · ${internal.crew}` : internal.name, null, `Përputhet me fushën aktive dhe ${internal.crew ? `ekipi ${internal.crew} është i disponueshëm.` : "një grup pune i disponueshëm e mbulon."}`, "low", 0.8));
     } else if (bestPartner) {
       const partnerAllocation = allocation(workPackage.id, "partner", 100, bestPartner.partner.id, null, null, null, `Nuk u gjet mbulim i brendshëm; ${bestPartner.partner.name} mbulon ${bestPartner.fit.capability}.`, bestPartner.partner.dependencyRisk, 0.72); partnerAllocation.partnerName = bestPartner.partner.name; allocations.push(partnerAllocation);
@@ -107,7 +151,13 @@ export function generateDeliveryPlan(tender: TenderNotice, model: CompanyCapabil
     }
     if (rental?.resource) { const rentalAllocation = allocation(workPackage.id, "rental", 0, rental.partner.id, rental.resource.resourceId, null, rental.resource.amountAll, `Makineri me qira nga ${rental.partner.name}: ${rental.resource.name}.`, rental.partner.dependencyRisk, 0.68); rentalAllocation.partnerName = rental.partner.name; rentalAllocation.resourceName = rental.resource.name; allocations.push(rentalAllocation); }
   }
-  return recalculateDeliverySummary({ tenderId: tender.id, workPackages, allocations, generatedAt: new Date().toISOString(), capabilityVersion: model.activeVersion, summary: { internalPercent: 0, partnerPercent: 0, rentalCount: 0, uncoveredCount: 0, provisionalCount: 0 } });
+  return recalculateDeliverySummary({ tenderId: tender.id, workPackages, allocations, generatedAt: new Date().toISOString(), capabilityVersion: model.activeVersion, capabilityUpdatedAt: model.draftUpdatedAt, plannerVersion: DELIVERY_PLANNER_VERSION, summary: { internalPercent: 0, partnerPercent: 0, rentalCount: 0, uncoveredCount: 0, provisionalCount: 0 } });
+}
+
+export function deliveryPlanIsCurrent(plan: TenderDeliveryPlan, model: CompanyCapabilityModel): boolean {
+  return plan.plannerVersion === DELIVERY_PLANNER_VERSION
+    && plan.capabilityVersion === model.activeVersion
+    && plan.capabilityUpdatedAt === model.draftUpdatedAt;
 }
 
 export function updateAllocation(plan: TenderDeliveryPlan, allocationId: string, patch: Partial<TenderWorkAllocation>): TenderDeliveryPlan | null {
