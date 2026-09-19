@@ -309,9 +309,27 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
   let fitRangeHigh = rounded(criteria.reduce((sum, item) => sum + item.weight * item.upperBound / 100, 0) / denominator * 100);
   const confidenceScore = rounded(coverage * 100);
   const scopeResult = criteria.find((item) => item.key === "scope")!;
+  const experienceResult = criteria.find((item) => item.key === "experience")!;
+  const financialResult = criteria.find((item) => item.key === "financial")!;
+  const scheduleResult = criteria.find((item) => item.key === "schedule")!;
   // Schedule or geography can refine a suitable opportunity, but they must
   // never manufacture suitability when the company has not declared its work.
   if (scopeResult.applicability === "unknown") score = 0;
+
+  // A score answers "how well does the known work fit?", but the main feed
+  // must not show a near-perfect number when the company has not recorded
+  // comparable projects, financial limits, or enough bid preparation time.
+  // These gaps are not hard rejections: they cap the score and force review.
+  const verificationGaps = {
+    experience: experienceResult.applicability === "unknown",
+    financial: tender.limitFundAll != null && financialResult.applicability === "unknown",
+    schedule: scheduleResult.applicability === "applicable" && (scheduleResult.score ?? 100) < 50,
+  };
+  let verificationCap = 100;
+  if (verificationGaps.experience) verificationCap = Math.min(verificationCap, 85);
+  if (verificationGaps.financial) verificationCap = Math.min(verificationCap, 80);
+  if (verificationGaps.schedule) verificationCap = Math.min(verificationCap, 70);
+  score = Math.min(score, verificationCap);
 
   const explicitFailures = requirementMatches.filter((item) => ["missing", "expired", "unavailable"].includes(item.result) && item.confidence >= 0.85 && mandatoryContext(tender, item.tenderRequirement));
   const expiredDeadline = tender.submissionDeadline != null && Number.isFinite(Date.parse(tender.submissionDeadline)) && Date.parse(tender.submissionDeadline) <= Date.now();
@@ -340,7 +358,8 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
 
   let decision: TenderDecision; let recommendation: TenderMatch["recommendation"]; let recommendationReason: string;
   if (hardBlocked) { decision = "blocked"; recommendation = "blocked"; recommendationReason = "Ekziston të paktën një bllokues i konfirmuar."; }
-  else if (score >= 80 && confidenceScore >= 60 && (scopeResult.score ?? 0) >= 65 && !criticalUnknowns.length) { decision = "high_fit"; recommendation = "strong"; recommendationReason = "Përshtatja është e lartë, provat janë të mjaftueshme dhe nuk ka boshllëqe kritike."; }
+  else if (score >= 80 && confidenceScore >= 60 && (scopeResult.score ?? 0) >= 65 && !criticalUnknowns.length && verificationCap === 100) { decision = "high_fit"; recommendation = "strong"; recommendationReason = "Përshtatja është e lartë, provat janë të mjaftueshme dhe nuk ka boshllëqe kritike."; }
+  else if (verificationCap < 100 && (scopeResult.score ?? 0) >= 65) { decision = "review"; recommendation = "promising_verify"; recommendationReason = "Puna përputhet me kapacitetet e njohura, por mungojnë të dhëna materiale për eksperiencën, financat ose afatin."; }
   else if (score >= 65 && confidenceScore >= 40 && (scopeResult.score ?? 0) >= 65) { decision = "good_fit"; recommendation = "good"; recommendationReason = "Tenderi përputhet mirë me kapacitetet e njohura; verifikoni kriteret që mungojnë."; }
   else if ((scopeResult.score ?? 0) >= 65 && (score >= 55 || fitRangeHigh >= 65)) { decision = "review"; recommendation = "promising_verify"; recommendationReason = "Mundësia duket premtuese, por të dhënat e kufizuara nuk lejojnë një vendim të fortë."; }
   else if (score >= 50) { decision = "review"; recommendation = "review"; recommendationReason = "Ka elemente të përshtatshme dhe boshllëqe që duhen kontrolluar para vendimit."; }
