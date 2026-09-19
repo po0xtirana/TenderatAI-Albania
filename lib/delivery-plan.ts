@@ -12,9 +12,9 @@ export const DELIVERY_PLANNER_VERSION = "evidence-components-v3";
 
 const ROLE_FAMILIES: Array<{ cpvPrefixes: string[]; groups: string[][]; minimum: number }> = [
   { cpvPrefixes: ["4521"], groups: [["murator", "murature"], ["karpentier", "marangoz"], ["hekur kthyes", "betonist"]], minimum: 2 },
-  { cpvPrefixes: ["4526"], groups: [["karpentier", "marangoz", "catipunues"], ["hidroizol", "llamarin"]], minimum: 1 },
   { cpvPrefixes: ["452623"], groups: [["betonist", "hekur kthyes"], ["karpentier", "marangoz"]], minimum: 1 },
   { cpvPrefixes: ["452625"], groups: [["murator", "murature"]], minimum: 1 },
+  { cpvPrefixes: ["4526"], groups: [["karpentier", "marangoz", "catipunues"], ["hidroizol", "llamarin"]], minimum: 1 },
   { cpvPrefixes: ["4531"], groups: [["elektr", "elekrit", "ndricim", "kabll"]], minimum: 1 },
   { cpvPrefixes: ["4533", "45232"], groups: [["hidraul", "ujesjelles", "kanaliz", "tubacion"]], minimum: 1 },
   { cpvPrefixes: ["4541", "4543", "4544", "4545"], groups: [["bojaxhi", "suvat", "fasad", "pllaka", "murator"]], minimum: 1 },
@@ -25,7 +25,7 @@ const ROLE_FAMILIES: Array<{ cpvPrefixes: string[]; groups: string[][]; minimum:
 const digits = (value: string) => value.replace(/\D/g, "").slice(0, 8);
 const sharedCpvPrefix = (left: string, right: string) => { const a = digits(left); const b = digits(right); let count = 0; while (count < a.length && count < b.length && a[count] === b[count]) count += 1; return count; };
 const cpvRelated = (left: string, right: string, minimum = 4) => { const a = digits(left); const b = digits(right); return Boolean(a && b) && (a.startsWith(b) || b.startsWith(a) || sharedCpvPrefix(a, b) >= minimum); };
-const availableNow = (value: string | null | undefined) => !value || !Number.isFinite(Date.parse(value)) || Date.parse(value) <= Date.now();
+const availableNow = (value: string | null | undefined) => !value || (Number.isFinite(Date.parse(value)) && Date.parse(value) <= Date.now());
 
 function phaseFor(label: string) {
   const value = normalize(label);
@@ -39,7 +39,10 @@ function phaseFor(label: string) {
 }
 
 function roleRequirement(cpv: string): Pick<PackageSeed, "roleGroups" | "minimumQualifiedGroups"> {
-  const found = ROLE_FAMILIES.find((family) => family.cpvPrefixes.some((prefix) => digits(cpv).startsWith(prefix)));
+  const found = ROLE_FAMILIES
+    .flatMap((family) => family.cpvPrefixes.map((prefix) => ({ family, prefix })))
+    .filter(({ prefix }) => digits(cpv).startsWith(prefix))
+    .sort((left, right) => right.prefix.length - left.prefix.length)[0]?.family;
   return found ? { roleGroups: found.groups, minimumQualifiedGroups: found.minimum } : { roleGroups: [], minimumQualifiedGroups: 0 };
 }
 
@@ -89,10 +92,13 @@ function workFit(seed: PackageSeed, model: CompanyCapabilityModel): WorkFit {
   return best;
 }
 
-function valuesCoverGroups(values: string[], groups: string[][]): { evidence: string[]; count: number } {
+function valuesCoverGroups(values: string[], groups: string[][]): { evidence: string[]; groupIndexes: number[] } {
   const text = normalize(values.filter(Boolean).join(" "));
-  const matched = groups.map((group) => group.find((term) => text.includes(normalize(term))) ?? null).filter((item): item is string => Boolean(item));
-  return { evidence: [...new Set(matched)], count: matched.length };
+  const matched = groups.map((group, groupIndex) => {
+    const term = group.find((candidate) => text.includes(normalize(candidate)));
+    return term ? { groupIndex, term } : null;
+  }).filter((item): item is { groupIndex: number; term: string } => Boolean(item));
+  return { evidence: matched.map((item) => item.term), groupIndexes: matched.map((item) => item.groupIndex) };
 }
 
 function internalFit(seed: PackageSeed, model: CompanyCapabilityModel): InternalFit {
@@ -102,17 +108,17 @@ function internalFit(seed: PackageSeed, model: CompanyCapabilityModel): Internal
   // roles. A component is confirmed only when its distinct required families
   // are covered by available people or crews.
   const candidates = [
-    ...model.crews.filter((item) => item.active && item.availableCrewCount > 0 && availableNow(item.availableFrom)).map((item) => {
-      const cover = valuesCoverGroups([item.name, item.workCategory, ...item.roles.flatMap((role) => [role.role, role.skill])], seed.roleGroups);
-      return { label: `${item.name}: ${cover.evidence.join(", ")}`, matched: cover.evidence };
+    ...model.crews.filter((item) => item.active && item.availableCrewCount > 0 && item.maxConcurrentProjects > 0 && availableNow(item.availableFrom)).map((item) => {
+      const cover = valuesCoverGroups(item.roles.filter((role) => role.headcount > 0).flatMap((role) => [role.role, role.skill]), seed.roleGroups);
+      return { label: `${item.name}: ${cover.evidence.join(", ")}`, matchedGroups: cover.groupIndexes };
     }),
     ...model.labourPools.filter((item) => item.active && item.availableHeadcount > 0 && availableNow(item.availableFrom)).map((item) => {
       const cover = valuesCoverGroups([item.role, ...item.skills], seed.roleGroups);
-      return { label: `${item.role}: ${cover.evidence.join(", ")}`, matched: cover.evidence };
+      return { label: `${item.role}: ${cover.evidence.join(", ")}`, matchedGroups: cover.groupIndexes };
     }),
-  ].filter((item) => item.matched.length);
+  ].filter((item) => item.matchedGroups.length);
   const evidence = [...new Set(candidates.map((item) => item.label))];
-  const matchedGroups = new Set(candidates.flatMap((item) => item.matched.map((term) => normalize(term))));
+  const matchedGroups = new Set(candidates.flatMap((item) => item.matchedGroups));
   // Components without a defined role template stay relevant-but-unverified;
   // lack of a template must never turn into a fabricated internal confirmation.
   return { work: scope.work, evidence, confirmed: seed.minimumQualifiedGroups > 0 && matchedGroups.size >= seed.minimumQualifiedGroups };
@@ -146,7 +152,24 @@ function rentalFit(seed: PackageSeed, partner: CapabilityPartner): { resourceId:
 function allocation(workPackageId: string, source: TenderWorkAllocation["source"], sharePercent: number, partnerId: string | null, resourceId: string | null, companyCapability: string | null, estimatedAmountAll: number | null, rationale: string, dependencyRisk: TenderWorkAllocation["dependencyRisk"], confidence: number): TenderWorkAllocation { return { id: `${workPackageId}-${source}-${partnerId ?? resourceId ?? "company"}`, workPackageId, source, sharePercent, partnerId, resourceId, companyCapability, estimatedAmountAll, status: "suggested", rationale, dependencyRisk, confidence }; }
 
 export function recalculateDeliverySummary(plan: TenderDeliveryPlan): TenderDeliveryPlan {
-  const workPackages = plan.workPackages.map((item) => item.verificationStatus === "provisional" && ["bulletin", "document"].includes(item.source) && item.confidence >= 0.7 ? { ...item, verificationStatus: "extracted" as const } : item);
+  const workPackages = plan.workPackages.map((item) => {
+    const execution = plan.allocations.filter((allocation) => allocation.workPackageId === item.id && ["internal", "hybrid", "partner", "uncovered"].includes(allocation.source));
+    const internalShare = execution.filter((allocation) => ["internal", "hybrid"].includes(allocation.source)).reduce((sum, allocation) => sum + allocation.sharePercent, 0);
+    const partnerShare = execution.filter((allocation) => allocation.source === "partner").reduce((sum, allocation) => sum + allocation.sharePercent, 0);
+    const uncoveredShare = execution.filter((allocation) => allocation.source === "uncovered").reduce((sum, allocation) => sum + allocation.sharePercent, 0);
+    const deliveryStatus: DeliveryStatus = uncoveredShare > 0
+      ? "uncovered"
+      : internalShare > 0
+        ? "confirmed_internal"
+        : partnerShare > 0
+          ? "confirmed_partner"
+          : item.deliveryStatus ?? "unknown";
+    return {
+      ...item,
+      deliveryStatus,
+      verificationStatus: item.verificationStatus === "provisional" && ["bulletin", "document"].includes(item.source) && item.confidence >= 0.7 ? "extracted" as const : item.verificationStatus,
+    };
+  });
   const packageIds = [...new Set(workPackages.map((item) => item.id))]; const coverage = (sources: TenderWorkAllocation["source"][]) => packageIds.length ? packageIds.reduce((sum, packageId) => sum + plan.allocations.filter((item) => item.workPackageId === packageId && sources.includes(item.source)).reduce((inner, item) => inner + item.sharePercent, 0), 0) / packageIds.length : 0;
   const internalConfirmedCount = workPackages.filter((item) => item.deliveryStatus === "confirmed_internal").length;
   const partnerConfirmedCount = workPackages.filter((item) => item.deliveryStatus === "confirmed_partner").length;
@@ -156,10 +179,10 @@ export function recalculateDeliverySummary(plan: TenderDeliveryPlan): TenderDeli
 
 export function generateDeliveryPlan(tender: TenderNotice, model: CompanyCapabilityModel): TenderDeliveryPlan {
   const seeds = packageSeeds(tender); const allocations: TenderWorkAllocation[] = [];
-  const workPackages = seeds.map((seed, index) => {
+  const workPackages = seeds.map((seed) => {
     const internal = internalFit(seed, model); const partners = model.partners.map((partner) => ({ partner, fit: partnerFit(seed, partner) })).filter((item): item is { partner: CapabilityPartner; fit: { score: number; capability: string } } => Boolean(item.fit)).sort((a, b) => b.fit.score - a.fit.score);
     const partner = partners[0]; const rental = model.partners.map((candidate) => ({ partner: candidate, resource: rentalFit(seed, candidate) })).find((item) => item.resource); const scope = workFit(seed, model);
-    let deliveryStatus: DeliveryStatus = "uncovered"; let matchedCapability: string | null = scope?.work.trade ?? null; let resourceEvidence: string[] = internal?.evidence ?? []; const id = `${tender.id}-work-${index + 1}`;
+    let deliveryStatus: DeliveryStatus = "uncovered"; let matchedCapability: string | null = scope?.work.trade ?? null; let resourceEvidence: string[] = internal?.evidence ?? []; const id = `${tender.id}-work-${seed.key.replace(/[^a-zA-Z0-9-]/g, "-")}`;
     if (internal?.confirmed) { deliveryStatus = "confirmed_internal"; allocations.push(allocation(id, "internal", 100, null, null, `${internal.work.trade} · ${internal.evidence.join("; ")}`, null, "Specializimi dhe fuqia punëtore e lidhur janë të disponueshme për këtë komponent. Sasia dhe afati i realizimit mbeten për verifikim.", "low", 0.72)); }
     else if (partner) { deliveryStatus = "confirmed_partner"; matchedCapability = partner.partner.name; resourceEvidence = [partner.fit.capability]; const item = allocation(id, "partner", 100, partner.partner.id, null, null, null, `${partner.partner.name} ka kapacitet të aprovuar për ${partner.fit.capability}. Disponueshmëria dhe oferta e partnerit kërkojnë konfirmim.`, partner.partner.dependencyRisk, 0.68); item.partnerName = partner.partner.name; allocations.push(item); }
     else if (internal || scope) { deliveryStatus = "relevant_unverified"; allocations.push(allocation(id, "uncovered", 100, null, null, internal?.work.trade ?? scope?.work.trade ?? null, null, "Kompania ka specializim të lidhur, por nuk u konfirmua kombinimi minimal i personelit ose ekipit për këtë komponent.", "medium", 0.4)); }

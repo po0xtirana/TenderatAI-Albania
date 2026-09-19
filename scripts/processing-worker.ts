@@ -55,13 +55,19 @@ async function finish(jobId: string, status: "succeeded" | "retryable" | "failed
     status, stage, last_error: errorMessage, result_metadata: resultMetadata,
     next_run_at: retry ? nextRun : new Date().toISOString(), locked_at: null, locked_by: null,
     completed_at: status === "succeeded" || status === "failed" ? new Date().toISOString() : null
-  }).eq("id", jobId).eq("owner_user_id", ownerId);
+  }).eq("id", jobId).eq("owner_user_id", ownerId).eq("locked_by", workerId);
   if (error) throw new Error(`Worker queue finish: ${error.message}`);
 }
 
 async function processOne() {
   const job = await claimNext();
   if (!job) return false;
+  const heartbeat = setInterval(() => {
+    const { client, ownerId } = configuration();
+    void client.from("bulletin_processing_jobs").update({ locked_at: new Date().toISOString() })
+      .eq("id", job.id).eq("owner_user_id", ownerId).eq("status", "running").eq("locked_by", workerId)
+      .then(({ error }) => { if (error) console.warn("[processing-worker] heartbeat failed", error.message); });
+  }, 60_000);
   try {
     const snapshot = await cloudSnapshot();
     const localBulletin = snapshot.bulletins.find((item) => item.fileHash === job.source_fingerprint);
@@ -79,6 +85,8 @@ async function processOne() {
     const message = error instanceof Error ? error.message : String(error);
     const attempts = Number(job.attempt_count);
     await finish(job.id, attempts >= 3 ? "failed" : "retryable", "failed", message, { bulletinId: job.bulletin_id });
+  } finally {
+    clearInterval(heartbeat);
   }
   return true;
 }

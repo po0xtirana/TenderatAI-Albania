@@ -3,12 +3,15 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE_NAME, accessCookieValue, safeNextPath, secretsEqual } from "./lib/access-gate";
 
 export async function middleware(request: NextRequest) {
+  const isAuthorizedCron = request.nextUrl.pathname === "/api/cron/process-jobs"
+    && Boolean(process.env.CRON_SECRET)
+    && request.headers.get("authorization") === `Bearer ${process.env.CRON_SECRET}`;
   const accessPasscode = process.env.APP_ACCESS_PASSCODE;
   const accessSecret = process.env.APP_ACCESS_COOKIE_SECRET;
   if (Boolean(accessPasscode) !== Boolean(accessSecret)) return NextResponse.json({ error: "Mbrojtja e aplikacionit nuk është konfiguruar plotësisht." }, { status: 503 });
   if (accessPasscode && accessSecret) {
     const pathname = request.nextUrl.pathname;
-    const publicPath = pathname === "/access" || pathname === "/api/access" || pathname === "/api/health";
+    const publicPath = pathname === "/access" || pathname === "/api/access" || pathname === "/api/health" || isAuthorizedCron;
     if (!publicPath) {
       const expected = await accessCookieValue(accessSecret);
       const supplied = request.cookies.get(ACCESS_COOKIE_NAME)?.value ?? "";
@@ -21,6 +24,7 @@ export async function middleware(request: NextRequest) {
     }
   }
   if (process.env.DATA_BACKEND !== "supabase") return NextResponse.next();
+  if (isAuthorizedCron) return NextResponse.next();
   if (process.env.PASSWORDLESS_MODE === "1") {
     const configuredToken = process.env.APP_LINK_TOKEN;
     if (!configuredToken) return NextResponse.next();

@@ -12,9 +12,10 @@ import type {
   TenderEligibility,
   TenderMatch,
   TenderNotice,
+  TenderDeliveryPlan,
 } from "./types";
 
-export const SCORING_MODEL_VERSION = "albania-evidence-adaptive-v2";
+export const SCORING_MODEL_VERSION = "albania-assessment-v3";
 export const CALIBRATION_MODEL_VERSION = "feedback-beta-v1";
 
 export type MatchCalibration = {
@@ -28,7 +29,8 @@ type LegacyMatch = Pick<TenderMatch,
   "capabilityGaps" | "staleInformation" | "requirementMatches"
 >;
 
-const WEIGHTS = { scope: 60, delivery: 20, experience: 15, geography: 5, financial: 0, schedule: 0, preference: 0 } as const;
+const WEIGHTS = { scope: 75, delivery: 0, experience: 15, geography: 10, financial: 0, schedule: 0, preference: 0 } as const;
+const EVIDENCE_WEIGHTS: Record<ScoringCriterionResult["key"], number> = { scope: 35, delivery: 25, experience: 15, financial: 10, geography: 5, schedule: 5, preference: 5 };
 const DAY = 86_400_000;
 const MANDATORY_TERMS = ["kerkohet", "duhet te kete", "detyrimisht", "kusht i vecante", "kapaciteti teknik", "kriteret e vecanta", "operatori ekonomik"];
 
@@ -164,10 +166,9 @@ function freshnessPenalty(model: CompanyCapabilityModel): number {
   return staleLabour || staleEquipment ? 0.15 : 0;
 }
 
-function scopeCriterion(tender: TenderNotice, model: CompanyCapabilityModel, profile: CompanyCapabilityProfile): ScoringCriterionResult {
+function scopeCriterion(tender: TenderNotice, model: CompanyCapabilityModel, profile: CompanyCapabilityProfile, plan: TenderDeliveryPlan): ScoringCriterionResult {
   const configured = model.workCapabilities.some((item) => item.active) || profile.trades.length > 0 || activeApprovedPartners(model).length > 0;
   if (!configured) return makeCriterion({ key: "scope", label: "Fusha dhe komponentët e punës", weight: WEIGHTS.scope, applicability: "unknown", score: null, evidenceQuality: 0, tenderEvidence: evidence(tender), explanation: "Kompania nuk ka deklaruar ende një fushë pune ose partner të aprovuar." });
-  const plan = generateDeliveryPlan(tender, model);
   const scoreFor = { exact: 100, equivalent: 85, broad: 60, partner: 70, unmatched: 0, unknown: 0 } as const;
   const score = plan.workPackages.length ? plan.workPackages.reduce((sum, item) => sum + scoreFor[item.scopeMatch ?? "unknown"], 0) / plan.workPackages.length : null;
   const resolved = plan.workPackages.filter((item) => item.scopeMatch !== "unknown").length;
@@ -180,8 +181,7 @@ function scopeCriterion(tender: TenderNotice, model: CompanyCapabilityModel, pro
   return makeCriterion({ key: "scope", label: "Fusha dhe komponentët e punës", weight: WEIGHTS.scope, applicability: "applicable", score, evidenceQuality: quality, tenderEvidence: evidence(tender), companyEvidence, explanation });
 }
 
-function deliveryCriterion(tender: TenderNotice, model: CompanyCapabilityModel, legacy: LegacyMatch): ScoringCriterionResult {
-  const plan = generateDeliveryPlan(tender, model);
+function deliveryCriterion(tender: TenderNotice, model: CompanyCapabilityModel, legacy: LegacyMatch, plan: TenderDeliveryPlan): ScoringCriterionResult {
   const explicit = legacy.requirementMatches.filter((item) => ["personnel", "equipment"].includes(item.requirementType) && mandatoryContext(tender, item.tenderRequirement));
   const confirmed = explicit.filter((item) => item.result === "confirmed").length;
   const companyEvidence = plan.workPackages.filter((item) => ["confirmed_internal", "confirmed_partner"].includes(item.deliveryStatus ?? "unknown")).map((item) => `${item.task}: ${item.matchedCapability ?? "kapacitet i konfirmuar"}`);
@@ -287,56 +287,45 @@ function componentProjection(criteria: ScoringCriterionResult[]): MatchComponent
   return { scope: contribution("scope"), compliance: 0, experience: contribution("experience"), people: Math.round(delivery?.contribution ?? 0), equipment: 0, financial: contribution("financial"), geography: contribution("geography"), schedule: contribution("schedule"), preference: contribution("preference") };
 }
 
-export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel: CompanyCapabilityModel | undefined, legacy: LegacyMatch, calibration: MatchCalibration = { adjustment: 0, evidenceCount: 0 }): TenderMatch {
+export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel: CompanyCapabilityModel | undefined, legacy: LegacyMatch, calibration: MatchCalibration = { adjustment: 0, evidenceCount: 0 }, suppliedPlan?: TenderDeliveryPlan): TenderMatch {
   const model = suppliedModel ?? emptyCapabilityModel(profile);
+  const plan = suppliedPlan ?? generateDeliveryPlan(tender, model);
   const requirementMatches: CapabilityRequirementMatch[] = legacy.requirementMatches.map((item) => {
     if (item.result !== "missing" || mandatoryContext(tender, item.tenderRequirement)) return item;
     return { ...item, result: "unknown", explanation: `${item.tenderRequirement} u përmend, por nuk u konfirmua si kërkesë detyruese në burimin e disponueshëm.` };
   });
-  const criteria = [scopeCriterion(tender, model, profile), deliveryCriterion(tender, model, { ...legacy, requirementMatches }), experienceCriterion(tender, model), financialCriterion(tender, model, profile, { ...legacy, requirementMatches }), geographyCriterion(tender, model, profile), scheduleCriterion(tender, model), preferenceCriterion(tender, model, profile)];
-  const denominator = criteria.filter((item) => item.applicability !== "not_applicable").reduce((sum, item) => sum + item.weight, 0) || 100;
-  const known = criteria.filter((item) => item.applicability === "applicable" && item.score != null && item.evidenceQuality > 0);
-  const observedWeight = known.reduce((sum, item) => sum + item.weight * item.evidenceQuality, 0);
-  const observedFit = observedWeight ? known.reduce((sum, item) => sum + item.weight * item.evidenceQuality * (item.score ?? 0), 0) / observedWeight : 0;
-  const coverage = clamp(observedWeight / denominator, 0, 1);
-  // Relevance feedback is retained for future feed ordering, but it must not
-  // alter the technical suitability of a tender with different scope details.
-  const boundedAdjustment = 0;
+  const criteria = [scopeCriterion(tender, model, profile, plan), deliveryCriterion(tender, model, { ...legacy, requirementMatches }, plan), experienceCriterion(tender, model), financialCriterion(tender, model, profile, { ...legacy, requirementMatches }), geographyCriterion(tender, model, profile), scheduleCriterion(tender, model), preferenceCriterion(tender, model, profile)];
+  const criterion = (key: ScoringCriterionResult["key"]) => criteria.find((item) => item.key === key)!;
+  const fitPriors: Partial<Record<ScoringCriterionResult["key"], number>> = { experience: 50, geography: 60 };
+  const fitKeys: ScoringCriterionResult["key"][] = ["scope", "experience", "geography"];
+  const fitDenominator = fitKeys.reduce((sum, key) => sum + criterion(key).weight, 0) || 100;
+  const adjustedFit = (item: ScoringCriterionResult) => item.applicability === "applicable" && item.score != null
+    ? 50 + (item.score - 50) * item.evidenceQuality
+    : fitPriors[item.key] ?? 0;
+  const observedFit = fitKeys.reduce((sum, key) => sum + criterion(key).weight * adjustedFit(criterion(key)), 0) / fitDenominator;
+  const evidenceDenominator = criteria.filter((item) => item.applicability !== "not_applicable").reduce((sum, item) => sum + EVIDENCE_WEIGHTS[item.key], 0) || 100;
+  const observedEvidence = criteria.filter((item) => item.applicability === "applicable").reduce((sum, item) => sum + EVIDENCE_WEIGHTS[item.key] * item.evidenceQuality, 0);
+  const coverage = clamp(observedEvidence / evidenceDenominator, 0, 1);
   // Evidence coverage is reported separately. A thin record can be promising,
   // but it must not be pulled toward an invented neutral score of 50.
   let score = rounded(observedFit);
-  let fitRangeLow = rounded(criteria.reduce((sum, item) => sum + item.weight * item.lowerBound / 100, 0) / denominator * 100);
-  let fitRangeHigh = rounded(criteria.reduce((sum, item) => sum + item.weight * item.upperBound / 100, 0) / denominator * 100);
+  let fitRangeLow = rounded(fitKeys.reduce((sum, key) => sum + criterion(key).weight * criterion(key).lowerBound, 0) / fitDenominator);
+  let fitRangeHigh = rounded(fitKeys.reduce((sum, key) => sum + criterion(key).weight * criterion(key).upperBound, 0) / fitDenominator);
   const confidenceScore = rounded(coverage * 100);
   const scopeResult = criteria.find((item) => item.key === "scope")!;
-  const experienceResult = criteria.find((item) => item.key === "experience")!;
-  const financialResult = criteria.find((item) => item.key === "financial")!;
-  const scheduleResult = criteria.find((item) => item.key === "schedule")!;
+  const deliveryResult = criteria.find((item) => item.key === "delivery")!;
+  const deliveryReadinessScore = deliveryResult.applicability === "applicable" ? deliveryResult.score : null;
   // Schedule or geography can refine a suitable opportunity, but they must
   // never manufacture suitability when the company has not declared its work.
   if (scopeResult.applicability === "unknown") score = 0;
-
-  // A score answers "how well does the known work fit?", but the main feed
-  // must not show a near-perfect number when the company has not recorded
-  // comparable projects, financial limits, or enough bid preparation time.
-  // These gaps are not hard rejections: they cap the score and force review.
-  const verificationGaps = {
-    experience: experienceResult.applicability === "unknown",
-    financial: tender.limitFundAll != null && financialResult.applicability === "unknown",
-    schedule: scheduleResult.applicability === "applicable" && (scheduleResult.score ?? 100) < 50,
-  };
-  let verificationCap = 100;
-  if (verificationGaps.experience) verificationCap = Math.min(verificationCap, 85);
-  if (verificationGaps.financial) verificationCap = Math.min(verificationCap, 80);
-  if (verificationGaps.schedule) verificationCap = Math.min(verificationCap, 70);
-  score = Math.min(score, verificationCap);
 
   const explicitFailures = requirementMatches.filter((item) => ["missing", "expired", "unavailable"].includes(item.result) && item.confidence >= 0.85 && mandatoryContext(tender, item.tenderRequirement));
   const expiredDeadline = tender.submissionDeadline != null && Number.isFinite(Date.parse(tender.submissionDeadline)) && Date.parse(tender.submissionDeadline) <= Date.now();
   const excluded = criteria.find((item) => item.key === "preference")?.score === 0;
   const financialFailure = criteria.find((item) => item.key === "financial")?.score === 0 && criteria.find((item) => item.key === "financial")?.evidenceQuality! >= 0.85;
   const lifecycleFailure = tender.lifecycleStatus === "cancelled" || tender.lifecycleStatus === "correction";
-  const hardBlocked = lifecycleFailure || expiredDeadline || excluded || financialFailure || explicitFailures.length > 0;
+  const eligibilityBlocked = financialFailure || explicitFailures.length > 0;
+  const hardBlocked = lifecycleFailure || expiredDeadline || excluded || eligibilityBlocked;
   const blockers = [
     ...(tender.lifecycleStatus === "cancelled" ? ["Procedura është anuluar dhe nuk është mundësi aktive."] : []),
     ...(tender.lifecycleStatus === "correction" ? ["Ky është njoftim korrigjimi dhe duhet lidhur me procedurën kryesore."] : []),
@@ -351,16 +340,14 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
   // from being presented as zero technical capability.
 
   const mandatory = requirementMatches.filter((item) => mandatoryContext(tender, item.tenderRequirement));
-  let eligibility: TenderEligibility = hardBlocked ? "not_eligible" : mandatory.length && mandatory.every((item) => item.result === "confirmed") ? "eligible" : "eligibility_pending";
-  if (hardBlocked) eligibility = "not_eligible";
+  let eligibility: TenderEligibility = eligibilityBlocked ? "not_eligible" : mandatory.length && mandatory.every((item) => item.result === "confirmed") ? "eligible" : "eligibility_pending";
   const eligibilityReason = eligibility === "eligible" ? "Kërkesat detyruese të identifikuara në burim mbulohen nga profili aktiv." : eligibility === "not_eligible" ? "Të paktën një bllokues ose kërkesë detyruese e konfirmuar nuk mbulohet." : "Buletini nuk përmban kriteret e plota; kualifikimi mbetet për verifikim pa ulur artificialisht përshtatjen.";
   const criticalUnknowns = criteria.filter((item) => item.applicability === "unknown" && item.weight >= 10).map((item) => item.explanation);
 
   let decision: TenderDecision; let recommendation: TenderMatch["recommendation"]; let recommendationReason: string;
   if (hardBlocked) { decision = "blocked"; recommendation = "blocked"; recommendationReason = "Ekziston të paktën një bllokues i konfirmuar."; }
-  else if (score >= 80 && confidenceScore >= 60 && (scopeResult.score ?? 0) >= 65 && !criticalUnknowns.length && verificationCap === 100) { decision = "high_fit"; recommendation = "strong"; recommendationReason = "Përshtatja është e lartë, provat janë të mjaftueshme dhe nuk ka boshllëqe kritike."; }
-  else if (verificationCap < 100 && (scopeResult.score ?? 0) >= 65) { decision = "review"; recommendation = "promising_verify"; recommendationReason = "Puna përputhet me kapacitetet e njohura, por mungojnë të dhëna materiale për eksperiencën, financat ose afatin."; }
-  else if (score >= 65 && confidenceScore >= 40 && (scopeResult.score ?? 0) >= 65) { decision = "good_fit"; recommendation = "good"; recommendationReason = "Tenderi përputhet mirë me kapacitetet e njohura; verifikoni kriteret që mungojnë."; }
+  else if (score >= 80 && confidenceScore >= 60 && (scopeResult.score ?? 0) >= 65 && (deliveryReadinessScore ?? 0) >= 65 && !criticalUnknowns.length) { decision = "high_fit"; recommendation = "strong"; recommendationReason = "Puna përshtatet, kapaciteti i realizimit është i mbuluar dhe provat janë të mjaftueshme."; }
+  else if (score >= 65 && confidenceScore >= 40 && (scopeResult.score ?? 0) >= 65 && (deliveryReadinessScore ?? 0) >= 45) { decision = "good_fit"; recommendation = "good"; recommendationReason = "Puna përputhet mirë dhe ka një rrugë realizimi; verifikoni kriteret që mungojnë."; }
   else if ((scopeResult.score ?? 0) >= 65 && (score >= 55 || fitRangeHigh >= 65)) { decision = "review"; recommendation = "promising_verify"; recommendationReason = "Mundësia duket premtuese, por të dhënat e kufizuara nuk lejojnë një vendim të fortë."; }
   else if (score >= 50) { decision = "review"; recommendation = "review"; recommendationReason = "Ka elemente të përshtatshme dhe boshllëqe që duhen kontrolluar para vendimit."; }
   else if (fitRangeHigh < 65 && confidenceScore >= 35) { decision = "low_fit"; recommendation = "low"; recommendationReason = "Edhe skenari pozitiv nuk e çon tenderin në një përputhje të fortë."; }
@@ -373,7 +360,7 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
     ...requirementMatches.filter((item) => item.result === "unknown").map((item) => item.explanation),
   ])];
   const confirmedCapabilities = [...new Set([
-    ...criteria.filter((item) => item.result === "confirmed").flatMap((item) => item.companyEvidence),
+    ...criteria.filter((item) => ["scope", "delivery", "experience"].includes(item.key) && item.result === "confirmed").flatMap((item) => item.companyEvidence),
     ...requirementMatches.filter((item) => item.result === "confirmed" && item.companyCapability).map((item) => item.companyCapability!),
   ])];
   const capabilityGaps = [...new Set([
@@ -398,12 +385,15 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
     eligibilityReason,
     evidenceCoverage: confidenceScore,
     observedFitScore: rounded(observedFit),
+    suitabilityScore: score,
+    deliveryReadinessScore,
     confidenceScore,
     fitRangeLow,
     fitRangeHigh,
     criterionResults: criteria,
     recommendation,
     recommendationReason,
+    opportunityStatus: tender.lifecycleStatus === "cancelled" || tender.lifecycleStatus === "correction" ? "cancelled" : expiredDeadline ? "closed" : excluded ? "excluded" : "open",
     criticalUnknowns,
     scoringModelVersion: SCORING_MODEL_VERSION,
     calibrationVersion: calibration.version ?? CALIBRATION_MODEL_VERSION,

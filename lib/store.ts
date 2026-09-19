@@ -5,11 +5,9 @@ import { extractBulletin } from "./parse-bulletin";
 import { createDeterministicInsights } from "./insights";
 import { generateAiInsights } from "./ai-insights";
 import { hasAiProvider } from "./ai-provider";
-import { matchTender } from "./matcher";
-import type { MatchCalibration } from "./matcher-v2";
-import { normalize } from "./normalize";
 import { authorityFacets, authorityMatches } from "./authority-catalog";
-import { deliveryPlanIsCurrent, generateDeliveryPlan, recalculateDeliverySummary, updateAllocation } from "./delivery-plan";
+import { recalculateDeliverySummary, updateAllocation } from "./delivery-plan";
+import { assessTender } from "./tender-assessment";
 import { generateDecisionBrief } from "./decision-brief";
 import { validateCapabilitySection } from "./capability-validation";
 import { calculateReadiness, capabilitySnapshot, capabilityToLegacy, demoCapabilityModel, emptyCapabilityModel } from "./capabilities";
@@ -65,28 +63,33 @@ function applyRelevanceFeedback(match: TenderMatch, relevant: boolean | null | u
   return { ...match, reasons: [...reasons, feedbackReason(relevant)] };
 }
 
-function feedbackCalibration(tender: TenderNotice, records: Array<Pick<TenderRecord, "tender" | "relevanceFeedback">>): MatchCalibration {
-  const authority = normalize(tender.contractingAuthority);
-  const families = new Set(tender.cpvCodes.map((code) => code.replace(/\D/g, "").slice(0, 4)).filter((code) => code.length === 4));
-  const related = records.filter((record) => {
-    if (record.tender.id === tender.id || record.relevanceFeedback == null) return false;
-    const sameAuthority = authority.length > 3 && normalize(record.tender.contractingAuthority) === authority;
-    const sameCpvFamily = record.tender.cpvCodes.some((code) => families.has(code.replace(/\D/g, "").slice(0, 4)));
-    return sameAuthority || sameCpvFamily;
-  });
-  if (related.length < 5) return { adjustment: 0, evidenceCount: related.length, version: "feedback-beta-v1" };
-  const positives = related.filter((record) => record.relevanceFeedback === true).length;
-  const posterior = (positives + 2) / (related.length + 4);
-  return { adjustment: Math.max(-5, Math.min(5, Math.round((posterior - 0.5) * 10))), evidenceCount: related.length, version: "feedback-beta-v1" };
+function recordAssessmentChange(record: TenderRecord, next: TenderMatch, reason: string): void {
+  const previousSuitability = record.match.suitabilityScore ?? record.match.score;
+  const suitability = next.suitabilityScore ?? next.score;
+  const previousDeliveryReadiness = record.match.deliveryReadinessScore ?? null;
+  const deliveryReadiness = next.deliveryReadinessScore ?? null;
+  if (previousSuitability === suitability && previousDeliveryReadiness === deliveryReadiness && record.match.capabilityVersion === next.capabilityVersion && record.match.scoringModelVersion === next.scoringModelVersion) return;
+  record.assessmentHistory = [
+    ...(record.assessmentHistory ?? []),
+    { changedAt: new Date().toISOString(), reason, previousSuitability, suitability, previousDeliveryReadiness, deliveryReadiness, previousCapabilityVersion: record.match.capabilityVersion, capabilityVersion: next.capabilityVersion, scoringModelVersion: next.scoringModelVersion ?? "unknown" },
+  ].slice(-12);
 }
 
 function rematchStore(store: RuntimeStore, options: { regenerateDelivery?: boolean } = {}): void {
   const active = activeCapability(store);
   const records = [...store.tenders.values()];
   for (const record of records) {
-    record.match = applyRelevanceFeedback(matchTender(record.tender, store.company, active, feedbackCalibration(record.tender, records)), record.relevanceFeedback);
+    const assessment = assessTender({
+      tender: record.tender,
+      profile: store.company,
+      model: active,
+      existingPlan: record.deliveryPlan,
+    });
+    const nextMatch = applyRelevanceFeedback(assessment.match, record.relevanceFeedback);
+    recordAssessmentChange(record, nextMatch, options.regenerateDelivery ? "Profili aktiv i kompanisë u përditësua." : "Vlerësimi u rifreskua me modelin aktual.");
+    record.match = nextMatch;
+    record.deliveryPlan = assessment.deliveryPlan;
     record.insights = refreshedInsights(record);
-    if (options.regenerateDelivery) record.deliveryPlan = generateDeliveryPlan(record.tender, active);
     record.decisionBrief = generateDecisionBrief(record, record.decisionBrief);
   }
 }
@@ -140,7 +143,9 @@ function findTenderByReference(store: RuntimeStore, tender: TenderNotice): Tende
 
 function activeCapability(store: RuntimeStore): CompanyCapabilityModel {
   const version = [...store.capabilityVersions].sort((a, b) => b.version - a.version)[0];
-  if (!version) return store.capability;
+  // Draft setup data is saved for the user, but it must not influence live
+  // rankings until the first complete profile has been activated.
+  if (!version) return emptyCapabilityModel(store.company);
   // A draft can be saved while a colleague is still editing it. Rankings must
   // remain tied to the immutable active snapshot until a valid update is
   // published, otherwise an old plan appears current against new data.
@@ -218,10 +223,9 @@ function restoreFromSaved(saved: PersistedState, restoredFiles = new Map<string,
     const active = activeCapability(base);
     for (const savedRecord of saved.tenders ?? []) {
       const bulletin = base.bulletins.find((item) => item.id === savedRecord.tender.bulletinId) ?? savedRecord.bulletin;
-      const match = applyRelevanceFeedback(matchTender(savedRecord.tender, company, active, feedbackCalibration(savedRecord.tender, saved.tenders ?? [])), savedRecord.relevanceFeedback);
-      const deliveryPlan = savedRecord.deliveryPlan && deliveryPlanIsCurrent(savedRecord.deliveryPlan, active)
-        ? recalculateDeliverySummary(savedRecord.deliveryPlan)
-        : generateDeliveryPlan(savedRecord.tender, active);
+      const assessment = assessTender({ tender: savedRecord.tender, profile: company, model: active, existingPlan: savedRecord.deliveryPlan });
+      const match = applyRelevanceFeedback(assessment.match, savedRecord.relevanceFeedback);
+      const deliveryPlan = assessment.deliveryPlan;
       base.tenders.set(savedRecord.tender.id, { ...savedRecord, bulletin, match, insights: refreshedInsights({ tender: savedRecord.tender, match, insights: savedRecord.insights ?? [] }), workflowStatus: savedRecord.workflowStatus ?? "new", deliveryPlan, relevanceFeedback: savedRecord.relevanceFeedback ?? null });
     }
     dedupeTenderRecords(base);
@@ -280,8 +284,8 @@ function makeDemoTender(bulletinId: string, index: number, data: Pick<TenderNoti
     sourceText: `${data.contractingAuthority}\n4. Objekti i kontratës: ${data.contractObject}\n5. Kodi sipas Fjalorit të Përbashkët të Prokurimit (FPP): ${data.cpvCodes.join(" ")}\n6. Fondi limit: ${data.limitFundAll?.toLocaleString("sq-AL") ?? "nuk është publikuar"} lekë pa TVSH.\n7. Kohëzgjatja: ${data.durationText ?? "nuk është publikuar"}.\n8. Afati i fundit: ${data.submissionDeadline ?? "nuk është publikuar"}.`,
     extractionConfidence: 0.93, lifecycleStatus: data.submissionDeadline && Date.parse(data.submissionDeadline) < Date.now() ? "expired" : "active", createdAt: new Date().toISOString()
   };
-  const match = matchTender(tender, demoCompany, capability);
-  return { tender, bulletin: demoBulletin, match, insights: createDeterministicInsights(tender, match), workflowStatus: "new", deliveryPlan: generateDeliveryPlan(tender, capability) };
+  const assessment = assessTender({ tender, profile: demoCompany, model: capability });
+  return { tender, bulletin: demoBulletin, match: assessment.match, insights: createDeterministicInsights(tender, assessment.match), workflowStatus: "new", deliveryPlan: assessment.deliveryPlan };
 }
 
 function createRuntimeStore(): RuntimeStore {
@@ -322,9 +326,10 @@ function runtime(): RuntimeStore {
     store.capabilityFiles = new Map();
     const active = activeCapability(store);
     for (const record of store.tenders.values()) {
-      record.match = matchTender(record.tender, store.company, active, feedbackCalibration(record.tender, [...store.tenders.values()]));
+      const assessment = assessTender({ tender: record.tender, profile: store.company, model: active, existingPlan: record.deliveryPlan });
+      record.match = assessment.match;
       record.insights = refreshedInsights(record);
-      record.deliveryPlan = generateDeliveryPlan(record.tender, active);
+      record.deliveryPlan = assessment.deliveryPlan;
     }
     persist(store);
   }
@@ -380,6 +385,9 @@ export function getSnapshot(options: { period?: "30d" | "90d" | "all"; decision?
     const decisionRank: Record<TenderRecord["match"]["decision"], number> = { high_fit: 0, good_fit: 1, review: 2, low_fit: 3, blocked: 4 };
     const rankDifference = decisionRank[a.match.decision] - decisionRank[b.match.decision];
     if (rankDifference) return rankDifference;
+    const feedbackRank = (value: boolean | null | undefined) => value === true ? 0 : value == null ? 1 : 2;
+    const feedbackDifference = feedbackRank(a.relevanceFeedback) - feedbackRank(b.relevanceFeedback);
+    if (feedbackDifference) return feedbackDifference;
     const scoreDifference = b.match.score - a.match.score; if (scoreDifference) return scoreDifference;
     const aDeadline = a.tender.submissionDeadline ? Date.parse(a.tender.submissionDeadline) : Number.POSITIVE_INFINITY;
     const bDeadline = b.tender.submissionDeadline ? Date.parse(b.tender.submissionDeadline) : Number.POSITIVE_INFINITY;
@@ -392,9 +400,16 @@ export function getTender(id: string): TenderRecord | null {
   const store = runtime(); const record = store.tenders.get(id); if (!record) return null;
   let changed = false;
   const active = activeCapability(store);
-  const hasReviewedAllocations = record.deliveryPlan?.allocations.some((item) => item.status !== "suggested") ?? false;
-  if (!record.deliveryPlan || (!hasReviewedAllocations && !deliveryPlanIsCurrent(record.deliveryPlan, active))) { record.deliveryPlan = generateDeliveryPlan(record.tender, active); changed = true; }
-  else record.deliveryPlan = recalculateDeliverySummary(record.deliveryPlan);
+  const planOutdated = !record.deliveryPlan || record.deliveryPlan.capabilityVersion !== active.activeVersion || record.deliveryPlan.capabilityUpdatedAt !== active.draftUpdatedAt;
+  if (planOutdated) {
+    const assessment = assessTender({ tender: record.tender, profile: store.company, model: active, existingPlan: record.deliveryPlan });
+    record.deliveryPlan = assessment.deliveryPlan;
+    const nextMatch = applyRelevanceFeedback(assessment.match, record.relevanceFeedback);
+    recordAssessmentChange(record, nextMatch, "Vlerësimi u përditësua sepse ndryshoi profili ose modeli i analizës.");
+    record.match = nextMatch;
+    record.insights = refreshedInsights(record);
+    changed = true;
+  } else if (record.deliveryPlan) record.deliveryPlan = recalculateDeliverySummary(record.deliveryPlan);
   const nextBrief = generateDecisionBrief(record, record.decisionBrief);
   if (!record.decisionBrief) changed = true;
   record.decisionBrief = nextBrief;
@@ -406,7 +421,14 @@ export function getTenderDecisionBrief(id: string) { return getTender(id)?.decis
 export function updateTenderDeliveryAllocation(tenderId: string, allocationId: string, patch: Record<string, unknown>): TenderRecord | null {
   const store = runtime(); const record = getTender(tenderId); if (!record?.deliveryPlan) return null;
   const next = updateAllocation(record.deliveryPlan, allocationId, patch as Partial<NonNullable<TenderRecord["deliveryPlan"]>["allocations"][number]>);
-  if (!next) return null; record.deliveryPlan = next; record.decisionBrief = generateDecisionBrief(record, record.decisionBrief); persist(store); return record;
+  if (!next) return null;
+  const assessment = assessTender({ tender: record.tender, profile: store.company, model: activeCapability(store), existingPlan: next });
+  const nextMatch = applyRelevanceFeedback(assessment.match, record.relevanceFeedback);
+  recordAssessmentChange(record, nextMatch, "Plani i realizimit u ndryshua nga përdoruesi.");
+  record.deliveryPlan = assessment.deliveryPlan;
+  record.match = nextMatch;
+  record.insights = refreshedInsights(record);
+  record.decisionBrief = generateDecisionBrief(record, record.decisionBrief); persist(store); return record;
 }
 export function updateTenderAction(tenderId: string, actionId: string, patch: { status?: TenderActionStatus; completionNote?: string; dueDate?: string | null }): TenderRecord | null {
   const store = runtime(); const record = getTender(tenderId); const brief = record?.decisionBrief;
@@ -559,9 +581,10 @@ export async function processBulletin(id: string, options: ProcessBulletinOption
     for (const tender of parsed.notices) {
       const existing = findTenderByReference(store, tender) ?? previousByReference.get(referenceKey(tender.referenceNumber)) ?? null;
       const feedback = existing?.relevanceFeedback ?? null;
-      const match = applyRelevanceFeedback(matchTender(tender, store.company, active), feedback);
+      const assessment = assessTender({ tender, profile: store.company, model: active });
+      const match = applyRelevanceFeedback(assessment.match, feedback);
       const previousStatus = existing?.workflowStatus ?? "new";
-      const record: TenderRecord = { tender, bulletin, match, insights: createDeterministicInsights(tender, match), workflowStatus: previousStatus, deliveryPlan: generateDeliveryPlan(tender, active), relevanceFeedback: feedback };
+      const record: TenderRecord = { tender, bulletin, match, insights: createDeterministicInsights(tender, match), workflowStatus: previousStatus, deliveryPlan: assessment.deliveryPlan, relevanceFeedback: feedback };
       if (existing && existing.tender.id !== tender.id) store.tenders.delete(existing.tender.id);
       records.push(record); store.tenders.set(tender.id, record);
     }

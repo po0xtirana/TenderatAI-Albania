@@ -14,7 +14,14 @@ export async function GET(request: NextRequest) {
   // keeping the initial response small enough for quick rendering after large bulletin uploads.
   const payload = {
     ...snapshot,
-    tenders: snapshot.tenders.map((record) => ({ ...record, insights: [], tender: { ...record.tender, sourceText: "" } }))
+    tenders: snapshot.tenders.map((record) => ({
+      tender: { ...record.tender, sourceText: "" },
+      bulletin: record.bulletin,
+      match: record.match,
+      insights: [],
+      workflowStatus: record.workflowStatus,
+      relevanceFeedback: record.relevanceFeedback ?? null,
+    }))
   };
   const body = JSON.stringify(payload);
   return new NextResponse(body, {

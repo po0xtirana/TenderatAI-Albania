@@ -12,6 +12,7 @@ import type {
   TenderAction,
   TenderWorkAllocation,
   TenderWorkflowStatus,
+  TenderNotice,
 } from "@/lib/types";
 import { decisionLabel } from "@/lib/matcher";
 
@@ -248,7 +249,7 @@ export default function TenderDetailPage() {
                 Profili v{match.capabilityVersion || "—"}
               </span>
               <span className="tag">
-                {match.scoringModelVersion?.includes("v2") ? "Scoring V2" : "Scoring V1"}
+                {match.scoringModelVersion === "albania-assessment-v3" ? "Vlerësim i unifikuar V3" : "Model historik"}
               </span>
               <span className="tag">
                 Faqet {tender.sourcePages.start}–{tender.sourcePages.end}
@@ -261,7 +262,7 @@ export default function TenderDetailPage() {
             </p>
           </div>
           <div className="big-score">
-            <small>{scoreUnavailable ? "STATUSI" : "PËRPUTHJA"}</small>
+            <small>{scoreUnavailable ? "STATUSI" : "PËRSHTATJA E PUNËS"}</small>
             {scoreUnavailable ? (
               <strong className="score-pending">Pa vlerësim</strong>
             ) : (
@@ -271,7 +272,7 @@ export default function TenderDetailPage() {
               </>
             )}
             <small className="score-confidence">
-              SIGURIA {match.confidenceScore ?? match.evidenceCoverage}%
+              PROVAT {match.confidenceScore ?? match.evidenceCoverage}%
             </small>
           </div>
         </section>
@@ -290,7 +291,14 @@ export default function TenderDetailPage() {
                 plan={deliveryPlan}
                 onPlanChange={setDeliveryPlan}
                 tenderId={tender.id}
+                tender={tender}
               />
+            )}
+            {(record.assessmentHistory?.length ?? 0) > 0 && (
+              <section className="detail-card assessment-history">
+                <div className="detail-card-heading"><div><p className="eyebrow">HISTORIKU I VLERËSIMIT</p><h2>Pse ndryshoi rekomandimi</h2></div></div>
+                <div className="reason-list">{record.assessmentHistory!.slice(-4).reverse().map((change) => <div key={`${change.changedAt}-${change.suitability}`}><span>↻</span><p><b>{change.previousSuitability} → {change.suitability} përshtatje</b> · realizimi {change.previousDeliveryReadiness ?? "—"} → {change.deliveryReadiness ?? "—"}. {change.reason} Profili v{change.capabilityVersion} · {new Intl.DateTimeFormat("sq-AL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(change.changedAt))}</p></div>)}</div>
+              </section>
             )}
             <section className="detail-card">
               <div className="detail-card-heading">
@@ -560,6 +568,7 @@ function DecisionBriefSection({ brief, tenderId, deliveryPlan, onChange }: { bri
     </div>
     <div className="decision-status-grid">
       <StatusCard title="Përshtatshmëria" value={suitabilityLabels[brief.suitability]} detail="Sa mirë i përshtatet puna kapaciteteve dhe preferencave të kompanisë." tone={brief.suitability} />
+      <StatusCard title="Kapaciteti i realizimit" value={deliveryPlan ? `${Math.min(100, deliveryPlan.summary.internalPercent + deliveryPlan.summary.partnerPercent)}% i mbuluar` : "Për verifikim"} detail="Sa nga puna ka ekip të brendshëm ose partner të identifikuar; nuk është i njëjtë me përshtatjen e fushës." tone={(deliveryPlan?.summary.uncoveredCount ?? 1) > 0 ? "partial" : "substantial"} />
       <StatusCard title="Kualifikimi" value={eligibilityLabels[brief.eligibility]} detail="Nëse kërkesat e identifikuara janë të mbuluara." tone={brief.eligibility} />
       <StatusCard title="Provë dokumentare" value={`${brief.evidenceCoverage}% · ${evidenceLabels[brief.evidenceCompleteness]}`} detail="Sa nga analiza mbështetet nga dokumenti i ngarkuar." tone={brief.evidenceCompleteness} />
     </div>
@@ -629,36 +638,33 @@ const deliveryStatusLabels: Record<NonNullable<TenderDeliveryPlan["workPackages"
   unknown: "Kërkon verifikim",
 };
 
-function phaseOverview(packages: TenderDeliveryPlan["workPackages"]): string {
+function phaseOverview(packages: TenderDeliveryPlan["workPackages"], tender: TenderNotice): string {
   const tasks = [...new Set(packages.map((item) => item.task).filter(Boolean))];
-  const listedTasks = tasks.length <= 3 ? tasks.join(", ") : `${tasks.slice(0, 3).join(", ")} dhe ${tasks.length - 3} komponentë të tjerë`;
+  const listedTasks = tasks.length <= 4 ? tasks.join(", ") : `${tasks.slice(0, 4).join(", ")} dhe ${tasks.length - 4} komponentë të tjerë`;
   const pages = [...new Set(packages.map((item) => item.sourcePage).filter((page) => Number.isFinite(page)))].sort((a, b) => a - b);
   const inferredOnly = packages.every((item) => item.source === "inference");
-  const phase = packages[0]?.phase ?? "";
-  const subject = packages[0]?.evidenceText?.replace(/\s+/g, " ").trim().slice(0, 240) || "objektin e tenderit";
-  const detail: Record<string, string> = {
-    "Projektim dhe koordinim": "Kjo fazë mbulon përgatitjen e projektit të zbatimit dhe dokumentacionit teknik që nevojitet para punimeve në terren.",
-    "Punime civile dhe strukturë": "Kjo fazë mbulon realizimin fizik të objektit në kantier: punime ndërtimore dhe strukturore që lidhen me zbatimin e projektit.",
-    "Pajisje dhe logjistikë": "Kjo fazë mbulon pajisjet ose makineritë e nevojshme për realizimin e punës dhe organizimin e tyre në kantier.",
-    "Instalime dhe rrjete": "Kjo fazë mbulon instalimet teknike të identifikuara, si kabllime, ndriçim ose sisteme elektrike, sipas kodeve CPV të tenderit.",
-    "Sisteme të specializuara": "Kjo fazë mbulon sistemet e specializuara të identifikuara, si siguria, pajisjet e portës ose elemente të sigurisë rrugore.",
-    "Çati dhe hidroizolim": "Kjo fazë mbulon konstruksionin, mbulesën dhe mbrojtjen nga uji të çatisë ose tarracës.",
-    "Fasada dhe përfundime": "Kjo fazë mbulon shtresat dhe përfundimet e jashtme ose të brendshme, përfshirë fasadën, veshjet, suvën apo lyerjen kur identifikohen.",
-    "Përgatitje dhe prishje": "Kjo fazë mbulon prishjen, çmontimin dhe përgatitjen e zonës së punës para zbatimit.",
+  const requirements = [...new Set(packages.flatMap((item) => item.requirements).filter(Boolean))].slice(0, 5);
+  const quantitiesKnown = packages.filter((item) => item.quantity != null).length;
+  const delivery = {
+    internal: packages.filter((item) => item.deliveryStatus === "confirmed_internal").length,
+    partner: packages.filter((item) => item.deliveryStatus === "confirmed_partner").length,
+    unresolved: packages.filter((item) => ["relevant_unverified", "uncovered", "unknown"].includes(item.deliveryStatus ?? "unknown")).length,
   };
-  const source = inferredOnly
-    ? "Ky interpretim është paraprak nga objekti dhe CPV-të; dokumentet e plota duhet të konfirmojnë zërat, sasitë dhe standardet."
-    : `Në njoftimin e disponueshëm nuk jepen zërat, sasitë ose specifikimet e plota për këtë fazë; ato duhen konfirmuar në dokumentet teknike. Burimi: ${pages.length === 1 ? `faqja ${pages[0]}` : `faqet ${pages.join(", ")}`}.`;
-  return `${detail[phase] ?? `Kjo fazë lidhet me ${listedTasks}.`} Lidhet me objektin “${subject}”. ${source}`;
+  const basis = inferredOnly ? "e inferuar nga objekti i kontratës" : `e identifikuar në ${pages.length === 1 ? `faqen ${pages[0]}` : `faqet ${pages.join(", ")}`}`;
+  const duration = tender.durationText ? ` Kohëzgjatja e publikuar për kontratën është “${tender.durationText}”.` : " Kohëzgjatja nuk është e qartë në njoftimin e publikuar.";
+  const quantity = quantitiesKnown === packages.length ? "Sasitë janë identifikuar për komponentët e kësaj faze." : "Sasitë dhe specifikimet teknike nuk janë të plota në njoftimin përmbledhës dhe duhen verifikuar në dokumentet e tenderit.";
+  return `Kjo fazë është ${basis} dhe përfshin: ${listedTasks || "komponentë ende të paspecifikuar"}. ${requirements.length ? `Baza e klasifikimit: ${requirements.join(", ")}. ` : ""}${delivery.internal} komponentë mbulohen brenda kompanisë, ${delivery.partner} nga partnerë dhe ${delivery.unresolved} kërkojnë vendim.${duration} ${quantity}`;
 }
 
 function DeliveryPlanSection({
   plan,
   tenderId,
+  tender,
   onPlanChange,
 }: {
   plan: TenderDeliveryPlan;
   tenderId: string;
+  tender: TenderNotice;
   onPlanChange: (plan: TenderDeliveryPlan) => void;
 }) {
   const [error, setError] = useState("");
@@ -733,7 +739,7 @@ function DeliveryPlanSection({
         {Object.entries(grouped).map(([phase, packages]) => (
           <div className="delivery-phase" key={phase}>
             <h3>{phase}</h3>
-            <p className="delivery-phase-overview">{phaseOverview(packages)}</p>
+            <p className="delivery-phase-overview">{phaseOverview(packages, tender)}</p>
             {packages.map((workPackage) => (
               <article className="delivery-package" key={workPackage.id}>
                 <div className="delivery-package-head">

@@ -206,12 +206,15 @@ export type TenderMatch = {
   eligibilityReason: string;
   evidenceCoverage: number;
   observedFitScore?: number;
+  suitabilityScore?: number;
+  deliveryReadinessScore?: number | null;
   confidenceScore?: number;
   fitRangeLow?: number;
   fitRangeHigh?: number;
   criterionResults?: ScoringCriterionResult[];
   recommendation?: MatchRecommendation;
   recommendationReason?: string;
+  opportunityStatus?: "open" | "closed" | "cancelled" | "excluded";
   criticalUnknowns?: string[];
   scoringModelVersion?: string;
   calibrationVersion?: string;
@@ -280,5 +283,10 @@ export type TenderDecisionBrief = {
 };
 
 export type AuthorityFacet = { id: string; name: string; abbreviation: string | null; parentId: string | null; aliases: string[]; count: number };
-export type TenderRecord = { tender: TenderNotice; bulletin: Bulletin; match: TenderMatch; insights: TenderInsight[]; workflowStatus: TenderWorkflowStatus; deliveryPlan?: TenderDeliveryPlan; decisionBrief?: TenderDecisionBrief; relevanceFeedback?: boolean | null };
+export type TenderAssessmentChange = {
+  changedAt: string; reason: string; previousSuitability: number; suitability: number;
+  previousDeliveryReadiness: number | null; deliveryReadiness: number | null;
+  previousCapabilityVersion: number; capabilityVersion: number; scoringModelVersion: string;
+};
+export type TenderRecord = { tender: TenderNotice; bulletin: Bulletin; match: TenderMatch; insights: TenderInsight[]; workflowStatus: TenderWorkflowStatus; deliveryPlan?: TenderDeliveryPlan; decisionBrief?: TenderDecisionBrief; assessmentHistory?: TenderAssessmentChange[]; relevanceFeedback?: boolean | null };
 export type AppSnapshot = { company: CompanyCapabilityProfile; readiness?: CapabilityReadiness; bulletins: Bulletin[]; tenders: TenderRecord[]; authorityFacets?: AuthorityFacet[] };

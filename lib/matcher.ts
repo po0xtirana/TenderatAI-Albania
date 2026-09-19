@@ -2,7 +2,7 @@ import { emptyCapabilityModel } from "./capabilities";
 import { normalize } from "./normalize";
 import { searchTermsForCpvCodes } from "./cpv-catalog";
 import { matchTenderV2, type MatchCalibration } from "./matcher-v2";
-import type { CapabilityRequirementMatch, CompanyCapabilityModel, CompanyCapabilityProfile, TenderEligibility, TenderMatch, TenderNotice } from "./types";
+import type { CapabilityRequirementMatch, CompanyCapabilityModel, CompanyCapabilityProfile, TenderDeliveryPlan, TenderEligibility, TenderMatch, TenderNotice } from "./types";
 
 /** Maximum contribution of each component. These weights add up to 100 and are
  * intentionally deterministic: AI may describe a tender but cannot change them. */
@@ -133,9 +133,9 @@ function matchTenderLegacy(tender: TenderNotice, profile: CompanyCapabilityProfi
  * pass is retained only to extract explicit staff, equipment, licence and
  * guarantee requirements until those parsers are moved into their own module.
  */
-export function matchTender(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel?: CompanyCapabilityModel, calibration?: MatchCalibration): TenderMatch {
+export function matchTender(tender: TenderNotice, profile: CompanyCapabilityProfile, suppliedModel?: CompanyCapabilityModel, calibration?: MatchCalibration, plan?: TenderDeliveryPlan): TenderMatch {
   const legacy = matchTenderLegacy(tender, profile, suppliedModel);
-  return matchTenderV2(tender, profile, suppliedModel, legacy, calibration);
+  return matchTenderV2(tender, profile, suppliedModel, legacy, calibration, plan);
 }
 
 export function decisionLabel(decision: TenderMatch["decision"]): string { return ({ high_fit: "Përshtatje shumë e lartë", good_fit: "Përshtatje e mirë", review: "Për rishikim", low_fit: "Përshtatje e dobët", blocked: "I bllokuar" })[decision]; }

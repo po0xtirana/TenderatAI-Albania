@@ -2,6 +2,16 @@ import type { TenderInsight, TenderNotice } from "./types";
 import { getAiClient, getAiModel, isUsingOpenRouter, parseAiJson, readAiResponseText } from "./ai-provider";
 
 type AiInsight = { type: TenderInsight["type"]; textAl: string; page: number; evidence: string; confidence: number; factOrInference: TenderInsight["factOrInference"] };
+const insightTypes = new Set<TenderInsight["type"]>(["summary", "work", "risk", "next_action", "requirement"]);
+
+function isAiInsight(value: unknown): value is AiInsight {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<AiInsight>;
+  return typeof item.type === "string" && insightTypes.has(item.type as TenderInsight["type"])
+    && typeof item.textAl === "string" && typeof item.page === "number" && Number.isInteger(item.page)
+    && typeof item.evidence === "string" && typeof item.confidence === "number" && Number.isFinite(item.confidence)
+    && ["extracted_fact", "inference"].includes(item.factOrInference ?? "");
+}
 
 function cleanEvidence(value: string): string {
   return value.trim().replace(/^["“”'‘’]+/, "").replace(/["“”'‘’]+$/, "").trim();
@@ -60,7 +70,7 @@ export async function generateAiInsights(tender: TenderNotice): Promise<TenderIn
   if (process.env.AI_DEBUG === "1") console.info("[ai-insights] raw response", responseText);
   const parsed = parseAiJson<{ insights?: AiInsight[] }>(responseText, { insights: [] });
   const normalizedSource = tender.sourceText.toLocaleLowerCase("sq-AL").replace(/\s+/g, " ").trim();
-  return (parsed.insights ?? []).filter((insight) => {
+  return (Array.isArray(parsed.insights) ? parsed.insights : []).filter(isAiInsight).filter((insight) => {
     const pageInRange = insight.page >= tender.sourcePages.start && insight.page <= tender.sourcePages.end;
     const normalizedEvidence = cleanEvidence(insight.evidence).toLocaleLowerCase("sq-AL").replace(/\s+/g, " ");
     const evidenceIsPresent = normalizedEvidence.length >= 8 && normalizedSource.includes(normalizedEvidence);

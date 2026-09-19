@@ -31,6 +31,7 @@ export default function Home() {
   const [period, setPeriod] = useState<"30d" | "90d" | "all">("30d");
   const [decision, setDecision] = useState("all");
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [authorityIds, setAuthorityIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -48,7 +49,7 @@ export default function Home() {
     setError("");
     try {
       const params = new URLSearchParams({ period, decision });
-      if (query) params.set("q", query);
+      if (debouncedQuery) params.set("q", debouncedQuery);
       authorityIds.forEach((authorityId) => params.append("authority", authorityId));
       const response = await fetch(`/api/snapshot?${params.toString()}`, { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -61,7 +62,12 @@ export default function Home() {
     } finally {
       if (snapshotRequest.current === controller) setLoading(false);
     }
-  }, [authorityIds, decision, period, query]);
+  }, [authorityIds, decision, period, debouncedQuery]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => () => snapshotRequest.current?.abort(), []);
@@ -69,7 +75,7 @@ export default function Home() {
   useEffect(() => {
     const hasPending = snapshot.bulletins.some((bulletin) => ["queued", "processing"].includes(bulletin.status));
     if (!hasPending) return;
-    const timer = window.setInterval(() => { void refresh(); }, 1800);
+    const timer = window.setInterval(() => { void refresh(); }, 5000);
     return () => window.clearInterval(timer);
   }, [refresh, snapshot.bulletins]);
 
@@ -99,8 +105,11 @@ export default function Home() {
     finally { setUploading(false); }
   };
 
-  const activeCount = snapshot.tenders.filter((record) => record.tender.lifecycleStatus === "active").length;
+  const activeCount = snapshot.tenders.filter((record) => record.match.opportunityStatus === "open" && (!record.tender.submissionDeadline || Date.parse(record.tender.submissionDeadline) > Date.now())).length;
   const highFitCount = snapshot.tenders.filter((record) => ["high_fit", "good_fit"].includes(record.match.decision)).length;
+  const verificationCount = snapshot.tenders.filter((record) => record.match.opportunityStatus === "open" && ((record.match.criticalUnknowns?.length ?? 0) > 0 || record.match.eligibility === "eligibility_pending")).length;
+  const deliveryGapCount = snapshot.tenders.filter((record) => record.match.opportunityStatus === "open" && (record.match.deliveryReadinessScore ?? 0) < 65 && (record.match.suitabilityScore ?? record.match.score) >= 65).length;
+  const recommended = useMemo(() => snapshot.tenders.filter((record) => record.match.opportunityStatus === "open" && record.match.decision !== "blocked").slice(0, 4), [snapshot.tenders]);
   const soonest = useMemo(() => [...snapshot.tenders].filter((record) => record.tender.lifecycleStatus === "active" && record.tender.submissionDeadline && Date.parse(record.tender.submissionDeadline) > Date.now()).sort((a, b) => Date.parse(a.tender.submissionDeadline!) - Date.parse(b.tender.submissionDeadline!))[0], [snapshot.tenders]);
 
   const saveFeedback = async (tenderId: string, relevant: boolean) => {
@@ -175,8 +184,8 @@ export default function Home() {
       </section>
 
       <section className="content-grid" id="opportunities">
-        <div className="section-card opportunity-card"><div className="section-heading"><div><p className="eyebrow">REKOMANDUAR PËR JU</p><h2>Mundësitë më të mira</h2></div><a href="#all-tenders">Shiko të gjitha <span>→</span></a></div>{loading ? <div className="loading-state">Duke ngarkuar tenderat…</div> : snapshot.tenders.slice(0, 4).map((record) => <OpportunityRow key={record.tender.id} record={record} />)}{!loading && !snapshot.tenders.length && <EmptyState />}</div>
-        <div className="section-card insight-card"><div className="section-heading"><div><p className="eyebrow">PËRMBLEDHJE E SHPEJTË</p><h2>Çfarë po ndodh</h2></div><span className="spark">✦</span></div><div className="insight-stat"><strong>{snapshot.bulletins[0]?.noticeCount ?? 0}</strong><span>njoftime në buletinin e fundit</span></div><div className="insight-line"><span className="line-icon">↗</span><p><b>{highFitCount} mundësi</b> përputhen me profilet e deklaruara të kompanisë.</p></div><div className="insight-line"><span className="line-icon warning">!</span><p><b>{snapshot.tenders.filter((record) => record.match.blockers.length > 0).length} kërkojnë vëmendje</b> për shkak të kapacitetit ose dokumentacionit.</p></div><Link className="text-link" href="/capabilities">Përditësoni kapacitetet →</Link></div>
+        <div className="section-card opportunity-card"><div className="section-heading"><div><p className="eyebrow">REKOMANDUAR PËR JU</p><h2>Mundësitë më të mira</h2></div><a href="#all-tenders">Shiko të gjitha <span>→</span></a></div>{loading ? <div className="loading-state">Duke ngarkuar tenderat…</div> : recommended.map((record) => <OpportunityRow key={record.tender.id} record={record} />)}{!loading && !recommended.length && <EmptyState />}</div>
+        <div className="section-card insight-card"><div className="section-heading"><div><p className="eyebrow">RADHA E PUNËS</p><h2>Çfarë kërkon vëmendje</h2></div><span className="spark">✦</span></div><div className="insight-stat"><strong>{highFitCount}</strong><span>mundësi të mira në pamjen aktuale</span></div><div className="insight-line"><span className="line-icon">?</span><p><b>{verificationCount} tendera</b> kanë kritere ose prova që duhen verifikuar para vendimit.</p></div><div className="insight-line"><span className="line-icon warning">!</span><p><b>{deliveryGapCount} mundësi</b> përshtaten me fushën, por kërkojnë ekip, partner ose pajisje të konfirmuar.</p></div><Link className="text-link" href="/capabilities">Kontrolloni profilin e kompanisë →</Link></div>
       </section>
 
       <section className="section-card all-tenders" id="all-tenders"><div className="section-heading tender-heading"><div><p className="eyebrow">ARKIVA E KOMPANISË</p><h2>Tenderat e zbuluar</h2><p className="section-subtitle">Kërkoni në njoftimet e ngarkuara dhe krahasoni periudhat.</p></div><div className="period-tabs" role="tablist">{([["30d", "30 ditë"], ["90d", "3 muaj"], ["all", "Të gjitha"]] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={period === value} className={period === value ? "selected" : ""} onClick={() => setPeriod(value)}>{label}</button>)}</div></div><div className="filters"><label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Kërko sipas objektit, autoritetit ose REF…" aria-label="Kërko tendera" /></label><select value={decision} onChange={(event) => setDecision(event.target.value)} aria-label="Filtro sipas përputhjes"><option value="all">Të gjitha përputhjet</option><option value="high_fit">Përshtatje shumë e lartë</option><option value="good_fit">Përshtatje e mirë</option><option value="review">Për rishikim</option><option value="blocked">Të bllokuara</option></select><AuthorityFilter facets={snapshot.authorityFacets ?? []} selected={authorityIds} onChange={setAuthorityIds} /></div><div className="table-head"><span>TENDERI</span><span>AUTORITETI</span><span>FONDI LIMIT</span><span>AFATI</span><span>PËRPUTHJA</span><span/></div>{loading ? <div className="loading-state">Duke përgatitur arkivin…</div> : snapshot.tenders.map((record) => <TenderTableRow key={record.tender.id} record={record} onFeedback={(relevant) => void saveFeedback(record.tender.id, relevant)} />)}{!loading && !snapshot.tenders.length && <EmptyState />}</section>
@@ -188,7 +197,7 @@ export default function Home() {
 }
 
 function OpportunityRow({ record }: { record: TenderRecord }) {
-  return <Link href={`/tenders/${encodeURIComponent(record.tender.id)}`} className="opportunity-row"><div className="score-badge"><strong>{record.match.score}</strong><small>/100</small></div><div className="opportunity-main"><div className="row-meta"><span>{record.tender.contractingAuthority}</span><span>·</span><span>{record.tender.referenceNumber}</span></div><h3>{record.tender.contractObject}</h3><div className="tag-row"><span className={decisionClass(record.match.decision)}>{decisionLabel(record.match.decision)}</span><span className="tag">Siguri {record.match.confidenceScore ?? record.match.evidenceCoverage}%</span>{record.tender.cpvCodes.slice(0, 1).map((code) => <span className="tag" key={code}>CPV {code}</span>)}<span className="tag">Faqe {record.tender.sourcePages.start}</span></div></div><div className="opportunity-deadline"><small>AFATI</small><b>{dateLabel(record.tender.submissionDeadline)}</b></div><span className="row-arrow">→</span></Link>;
+  return <Link href={`/tenders/${encodeURIComponent(record.tender.id)}`} className="opportunity-row"><div className="score-badge"><strong>{record.match.suitabilityScore ?? record.match.score}</strong><small>përshtatje</small></div><div className="opportunity-main"><div className="row-meta"><span>{record.tender.contractingAuthority}</span><span>·</span><span>{record.tender.referenceNumber}</span></div><h3>{record.tender.contractObject}</h3><div className="tag-row"><span className={decisionClass(record.match.decision)}>{decisionLabel(record.match.decision)}</span><span className="tag">Realizimi {record.match.deliveryReadinessScore == null ? "për verifikim" : `${record.match.deliveryReadinessScore}%`}</span><span className="tag">Provat {record.match.confidenceScore ?? record.match.evidenceCoverage}%</span>{record.tender.cpvCodes.slice(0, 1).map((code) => <span className="tag" key={code}>CPV {code}</span>)}</div></div><div className="opportunity-deadline"><small>AFATI</small><b>{dateLabel(record.tender.submissionDeadline)}</b></div><span className="row-arrow">→</span></Link>;
 }
 
 function TenderTableRow({ record, onFeedback }: { record: TenderRecord; onFeedback: (relevant: boolean) => void }) {
@@ -208,9 +217,21 @@ function EmptyState() { return <div className="empty-state"><span>◇</span><b>N
 
 function AuthorityFilter({ facets, selected, onChange }: { facets: AuthorityFacet[]; selected: string[]; onChange: (values: string[]) => void }) {
   const [open, setOpen] = useState(false); const [query, setQuery] = useState(""); const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null); const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => { try { const stored = window.localStorage.getItem("tenderat-authority-filter"); const parsed = stored ? JSON.parse(stored) as unknown : []; if (Array.isArray(parsed)) onChange([...new Set(parsed.filter((item): item is string => typeof item === "string" && item.length <= 180))]); } catch { /* local preference is optional */ } finally { setPreferencesLoaded(true); } }, [onChange]);
   useEffect(() => { if (!preferencesLoaded) return; try { window.localStorage.setItem("tenderat-authority-filter", JSON.stringify(selected)); } catch { /* local preference is optional */ } }, [preferencesLoaded, selected]);
+  useEffect(() => {
+    if (!open) return;
+    searchRef.current?.focus();
+    const close = (event: KeyboardEvent | MouseEvent) => {
+      if (event instanceof KeyboardEvent && event.key === "Escape") setOpen(false);
+      if (event instanceof MouseEvent && popoverRef.current && !popoverRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("keydown", close);
+    document.addEventListener("mousedown", close);
+    return () => { document.removeEventListener("keydown", close); document.removeEventListener("mousedown", close); };
+  }, [open]);
   const visible = facets.filter((facet) => facet.count > 0 || selected.includes(facet.id)).filter((facet) => !query || [facet.name, facet.abbreviation, ...facet.aliases].filter(Boolean).join(" ").toLocaleLowerCase("sq-AL").includes(query.toLocaleLowerCase("sq-AL")));
   const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter((value) => value !== id) : [...selected, id]);
-  return <div className="authority-filter"><button type="button" className={`authority-filter-trigger ${selected.length ? "selected" : ""}`} aria-expanded={open} onClick={() => setOpen(!open)}>⌖ {selected.length ? `${selected.length} autoritete` : "Filtro autoritetin"}<span>⌄</span></button>{open && <div className="authority-popover"><div className="authority-popover-head"><b>Autoritetet kontraktore</b><button type="button" onClick={() => { onChange([]); setOpen(false); }}>Pastro</button></div><input aria-label="Kërko autoritet" placeholder="Kërko OST, UKT, Bashkia…" value={query} onChange={(event) => setQuery(event.target.value)} />{visible.length ? <div className="authority-options">{visible.map((facet) => <label key={facet.id}><input type="checkbox" checked={selected.includes(facet.id)} onChange={() => toggle(facet.id)} /><span><b>{facet.abbreviation ?? facet.name}</b><small>{facet.abbreviation ? facet.name : facet.aliases[0] ?? "Emërtim i regjistruar"}</small></span><em>{facet.count}</em></label>)}</div> : <p className="authority-empty">Nuk u gjet autoritet me këtë emër.</p>}<button type="button" className="authority-apply" onClick={() => setOpen(false)}>Apliko filtrin</button></div>}</div>;
+  return <div className="authority-filter" ref={popoverRef}><button type="button" className={`authority-filter-trigger ${selected.length ? "selected" : ""}`} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>⌖ {selected.length ? `${selected.length} autoritete` : "Filtro autoritetin"}<span>⌄</span></button>{open && <div className="authority-popover" role="dialog" aria-label="Filtro autoritetet kontraktore"><div className="authority-popover-head"><b>Autoritetet kontraktore</b><button type="button" onClick={() => { onChange([]); setOpen(false); }}>Pastro</button></div><input ref={searchRef} aria-label="Kërko autoritet" placeholder="Kërko OST, UKT, Bashkia…" value={query} onChange={(event) => setQuery(event.target.value)} />{visible.length ? <div className="authority-options">{visible.map((facet) => <label key={facet.id}><input type="checkbox" checked={selected.includes(facet.id)} onChange={() => toggle(facet.id)} /><span><b>{facet.abbreviation ?? facet.name}</b><small>{facet.abbreviation ? facet.name : facet.aliases[0] ?? "Emërtim i regjistruar"}</small></span><em>{facet.count}</em></label>)}</div> : <p className="authority-empty">Nuk u gjet autoritet me këtë emër.</p>}<button type="button" className="authority-apply" onClick={() => setOpen(false)}>Apliko filtrin</button></div>}</div>;
 }

@@ -9,7 +9,14 @@ import {
 import type { LocalPersistedState } from "./store";
 import type { AppSnapshot, Bulletin, CapabilityDocument, CapabilityReadiness, CapabilitySectionKey, CapabilityVersion, CompanyCapabilityModel, CompanyCapabilityProfile, TenderActionStatus, TenderDecisionStatus, TenderRecord, TenderWorkflowStatus } from "./types";
 
-type CloudStateRow = { state: LocalPersistedState };
+type CloudStateRow = { state: LocalPersistedState; revision?: number; updated_at?: string };
+const loadedRevision = new WeakMap<object, number | null>();
+const loadedUpdatedAt = new WeakMap<object, string | null>();
+const revisionGuardAvailable = new WeakMap<object, boolean>();
+
+export class WorkspaceConflictError extends Error {
+  constructor() { super("Të dhënat u ndryshuan nga një proces tjetër. Rifreskoni faqen dhe provoni përsëri."); this.name = "WorkspaceConflictError"; }
+}
 
 async function clientAndUser() {
   const client = await getSupabaseServerClient();
@@ -25,16 +32,43 @@ async function clientAndUser() {
 
 async function loadState(): Promise<{ client: NonNullable<Awaited<ReturnType<typeof getSupabaseServerClient>>>; userId: string }> {
   const { client, user } = await clientAndUser();
-  const { data, error } = await client.from("workspace_state_snapshots").select("state").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string } | null };
+  let result = await client.from("workspace_state_snapshots").select("state, revision").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string; code?: string } | null };
+  if (result.error && /revision|column/i.test(result.error.message)) {
+    result = await client.from("workspace_state_snapshots").select("state, updated_at").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string; code?: string } | null };
+    revisionGuardAvailable.set(client, false);
+  } else revisionGuardAvailable.set(client, true);
+  const { data, error } = result;
   if (error) throw new Error(error.message);
   if (data?.state) importPersistedState(data.state);
+  loadedRevision.set(client, data?.revision ?? null);
+  loadedUpdatedAt.set(client, data?.updated_at ?? null);
   return { client, userId: user.id };
 }
 
 async function saveState(client: NonNullable<Awaited<ReturnType<typeof getSupabaseServerClient>>>, userId: string): Promise<LocalPersistedState> {
   const state = exportPersistedState();
-  const { error } = await client.from("workspace_state_snapshots").upsert({ owner_user_id: userId, schema_version: 1, state, updated_at: new Date().toISOString() });
+  if (revisionGuardAvailable.get(client) === false) {
+    const expectedUpdatedAt = loadedUpdatedAt.get(client) ?? null;
+    const nextUpdatedAt = new Date().toISOString();
+    const mutation = expectedUpdatedAt
+      ? client.from("workspace_state_snapshots").update({ schema_version: 1, state, updated_at: nextUpdatedAt }).eq("owner_user_id", userId).eq("updated_at", expectedUpdatedAt).select("updated_at")
+      : client.from("workspace_state_snapshots").insert({ owner_user_id: userId, schema_version: 1, state, updated_at: nextUpdatedAt }).select("updated_at");
+    const { data, error } = await mutation as { data: Array<{ updated_at: string }> | null; error: { message: string; code?: string } | null };
+    if (error) throw new Error(error.message);
+    if (!data?.length) throw new WorkspaceConflictError();
+    loadedUpdatedAt.set(client, data[0].updated_at);
+    return state;
+  }
+  const expectedRevision = loadedRevision.get(client) ?? null;
+  const { data, error } = await client.rpc("save_workspace_state_if_current", {
+    p_owner_user_id: userId,
+    p_expected_revision: expectedRevision,
+    p_schema_version: 1,
+    p_state: state,
+  }) as { data: Array<{ revision: number; updated_at: string }> | null; error: { message: string } | null };
   if (error) throw new Error(error.message);
+  if (!data?.length) throw new WorkspaceConflictError();
+  loadedRevision.set(client, data[0].revision);
   return state;
 }
 
@@ -256,6 +290,7 @@ export async function cloudProcessQueuedBulletin(id: string): Promise<boolean> {
     .eq("owner_user_id", userId)
     .eq("source_fingerprint", bulletin.fileHash)
     .in("status", ["queued", "retryable"])
+    .lte("next_run_at", new Date().toISOString())
     .order("created_at", { ascending: true })
     .limit(1);
   if (readError) throw new Error(`Radha e procesimit nuk u lexua: ${readError.message}`);

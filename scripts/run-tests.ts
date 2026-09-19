@@ -6,7 +6,7 @@ import { normalize } from "../lib/normalize";
 import { calculateReadiness, emptyCapabilityModel } from "../lib/capabilities";
 import { suggestCpvSpecializations } from "../lib/cpv-catalog";
 import { authorityId } from "../lib/authority-catalog";
-import { generateDeliveryPlan } from "../lib/delivery-plan";
+import { generateDeliveryPlan, updateAllocation } from "../lib/delivery-plan";
 import { parseDate, parseFund, parseNotice, segmentContractNotices } from "../lib/parse-bulletin";
 import { safeNextPath } from "../lib/access-gate";
 
@@ -34,6 +34,8 @@ assert.equal(roofSuggestions.some((item) => item.code === "45261910"), true);
 assert.equal(roofSuggestions.some((item) => item.code === "45261420"), true);
 
 assert.equal(parseDate("31.02.2026"), null, "impossible calendar dates must be rejected");
+assert.equal(parseDate("14.01.2026")?.endsWith("22:59:59.000Z"), true, "date-only winter deadlines must use the end of the Albanian local day");
+assert.equal(parseDate("14.09.2026 ora 10:30")?.endsWith("08:30:00.000Z"), true, "published Albanian deadline times must be preserved across daylight saving time");
 assert.equal(parseFund("12,924,995.13 ALL"), 12_924_995.13, "fund parsing must preserve all grouped digits");
 const sampleNotice = (authority: string, reference: string, object: string, cpv: string, fund: string) => `
 1. Emri dhe adresa e Autoritetit Kontraktor
@@ -145,6 +147,25 @@ for (const crew of unavailableInternalModel.crews) crew.availableCrewCount = 0;
 for (const pool of unavailableInternalModel.labourPools) pool.availableHeadcount = 0;
 const unavailableInternalPlan = generateDeliveryPlan(snapshot.tenders[0].tender, unavailableInternalModel);
 assert.equal(unavailableInternalPlan.allocations.some((item) => item.source === "internal"), false, "a declared trade without an available crew or labour pool must not be presented as internally executable");
+const synonymModel = structuredClone(unavailableInternalModel);
+synonymModel.workCapabilities = [{ ...capabilityBefore.model.workCapabilities[0], id: "building-synonym-regression", trade: "Ndërtim ndërtesash", cpvPrefixes: ["45210000"], deliveryMethod: "self_performed", active: true }];
+synonymModel.labourPools = ["Murator", "Muraturë"].map((role, index) => ({ ...capabilityBefore.model.labourPools[0], id: `synonym-${index}`, role, skills: [], headcount: 2, availableHeadcount: 2, availableFrom: null, active: true }));
+const synonymTender = { ...snapshot.tenders[0].tender, id: "synonym-role-regression", contractObject: "Ndërtim godine", cpvCodes: ["45210000-2"] };
+const synonymPlan = generateDeliveryPlan(synonymTender, synonymModel);
+assert.equal(synonymPlan.workPackages.some((item) => item.deliveryStatus === "confirmed_internal"), false, "synonyms from one role family must not be counted as distinct qualifications");
+
+const concreteModel = structuredClone(unavailableInternalModel);
+concreteModel.workCapabilities = [{ ...capabilityBefore.model.workCapabilities[0], id: "concrete-regression", trade: "Punime betoni", cpvPrefixes: ["45262300"], deliveryMethod: "self_performed", active: true }];
+concreteModel.labourPools = [{ ...capabilityBefore.model.labourPools[0], id: "concrete-worker", role: "Betonist", skills: [], headcount: 2, availableHeadcount: 2, availableFrom: null, active: true }];
+const concreteTender = { ...snapshot.tenders[0].tender, id: "specific-cpv-regression", contractObject: "Punime betoni", cpvCodes: ["45262300-4"] };
+const concretePlan = generateDeliveryPlan(concreteTender, concreteModel);
+assert.equal(concretePlan.workPackages.some((item) => item.deliveryStatus === "confirmed_internal"), true, "the most specific CPV role family must win over a broader roofing prefix");
+const concreteInternal = concretePlan.allocations.find((item) => item.source === "internal");
+assert.ok(concreteInternal);
+const concreteOverride = updateAllocation(concretePlan, concreteInternal.id, { source: "uncovered", sharePercent: 100 });
+assert.equal(concreteOverride?.summary.internalPercent, 0);
+assert.equal(concreteOverride?.summary.uncoveredCount, 1, "allocation overrides must update summary coverage");
+assert.equal(concreteOverride?.workPackages[0].deliveryStatus, "uncovered", "allocation overrides and package status must remain consistent");
 const portGateTender = structuredClone(snapshot.tenders[0].tender);
 portGateTender.id = "port-gate-regression";
 portGateTender.contractObject = "Zhvendosja e Portës 4 (Projektim+Zbatim)";
@@ -222,7 +243,9 @@ sparseTender.address = null;
 sparseTender.submissionDeadline = "2027-11-30T10:00:00.000Z";
 sparseTender.lifecycleStatus = "active";
 const sparseMatch = matchTender(sparseTender, snapshot.company, capabilityBefore.model);
-assert.equal(sparseMatch.scoringModelVersion, "albania-evidence-adaptive-v2", "V2 must be the only production scorer");
+assert.equal(sparseMatch.scoringModelVersion, "albania-assessment-v3", "the unified assessment model must be the only production scorer");
+assert.equal(sparseMatch.suitabilityScore, sparseMatch.score, "the headline score must mean work suitability");
+assert.equal(typeof sparseMatch.deliveryReadinessScore === "number" || sparseMatch.deliveryReadinessScore === null, true, "delivery readiness must be reported separately");
 assert.equal(sparseMatch.decision === "blocked" || sparseMatch.decision === "low_fit", false, "missing bulletin details must not create a false rejection");
 assert.equal((sparseMatch.confidenceScore ?? 100) < 80, true, "sparse bulletin data must lower confidence rather than suitability");
 assert.equal((sparseMatch.fitRangeHigh ?? 0) >= sparseMatch.score, true);

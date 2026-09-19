@@ -39,8 +39,18 @@ export function parseDate(value: string | null): string | null {
   const dayNumber = Number(day); const monthNumber = Number(month); const yearNumber = Number(year);
   const calendarDate = new Date(Date.UTC(yearNumber, monthNumber - 1, dayNumber));
   if (calendarDate.getUTCFullYear() !== yearNumber || calendarDate.getUTCMonth() !== monthNumber - 1 || calendarDate.getUTCDate() !== dayNumber) return null;
-  const iso = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T12:00:00+02:00`;
-  return Number.isNaN(Date.parse(iso)) ? null : new Date(iso).toISOString();
+  const time = value.match(/(?:ora\s*)?(\d{1,2}):([0-5]\d)(?=\D|$)/i);
+  const hour = time ? Number(time[1]) : 23;
+  const minute = time ? Number(time[2]) : 59;
+  if (hour > 23) return null;
+  // APP deadlines are Albanian local time. Calculate the Europe/Tirane offset
+  // for the actual date so winter deadlines are not shifted by a fixed +02.
+  const noonUtc = new Date(Date.UTC(yearNumber, monthNumber - 1, dayNumber, 12));
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Tirane", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(noonUtc);
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value ?? 0);
+  const representedAsUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+  const offsetMs = representedAsUtc - noonUtc.getTime();
+  return new Date(Date.UTC(yearNumber, monthNumber - 1, dayNumber, hour, minute, time ? 0 : 59) - offsetMs).toISOString();
 }
 
 function findPagesContaining(pages: ParsedPage[], pattern: RegExp): number | null {
