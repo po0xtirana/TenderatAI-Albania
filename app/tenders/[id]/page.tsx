@@ -634,10 +634,22 @@ function phaseOverview(packages: TenderDeliveryPlan["workPackages"]): string {
   const listedTasks = tasks.length <= 3 ? tasks.join(", ") : `${tasks.slice(0, 3).join(", ")} dhe ${tasks.length - 3} komponentë të tjerë`;
   const pages = [...new Set(packages.map((item) => item.sourcePage).filter((page) => Number.isFinite(page)))].sort((a, b) => a - b);
   const inferredOnly = packages.every((item) => item.source === "inference");
+  const phase = packages[0]?.phase ?? "";
+  const subject = packages[0]?.evidenceText?.replace(/\s+/g, " ").trim().slice(0, 240) || "objektin e tenderit";
+  const detail: Record<string, string> = {
+    "Projektim dhe koordinim": "Kjo fazë mbulon përgatitjen e projektit të zbatimit dhe dokumentacionit teknik që nevojitet para punimeve në terren.",
+    "Punime civile dhe strukturë": "Kjo fazë mbulon realizimin fizik të objektit në kantier: punime ndërtimore dhe strukturore që lidhen me zbatimin e projektit.",
+    "Pajisje dhe logjistikë": "Kjo fazë mbulon pajisjet ose makineritë e nevojshme për realizimin e punës dhe organizimin e tyre në kantier.",
+    "Instalime dhe rrjete": "Kjo fazë mbulon instalimet teknike të identifikuara, si kabllime, ndriçim ose sisteme elektrike, sipas kodeve CPV të tenderit.",
+    "Sisteme të specializuara": "Kjo fazë mbulon sistemet e specializuara të identifikuara, si siguria, pajisjet e portës ose elemente të sigurisë rrugore.",
+    "Çati dhe hidroizolim": "Kjo fazë mbulon konstruksionin, mbulesën dhe mbrojtjen nga uji të çatisë ose tarracës.",
+    "Fasada dhe përfundime": "Kjo fazë mbulon shtresat dhe përfundimet e jashtme ose të brendshme, përfshirë fasadën, veshjet, suvën apo lyerjen kur identifikohen.",
+    "Përgatitje dhe prishje": "Kjo fazë mbulon prishjen, çmontimin dhe përgatitjen e zonës së punës para zbatimit.",
+  };
   const source = inferredOnly
-    ? "Kjo është një përmbledhje paraprake nga objekti dhe kodet CPV; kontrolloni dokumentet e plota para ofertës."
-    : `Përmbledhja bazohet në njoftimin e nxjerrë nga ${pages.length === 1 ? `faqja ${pages[0]}` : `faqet ${pages.join(", ")}`}.`;
-  return `${inferredOnly ? "Mund të përfshijë" : "Përfshin"} ${listedTasks}. ${source}`;
+    ? "Ky interpretim është paraprak nga objekti dhe CPV-të; dokumentet e plota duhet të konfirmojnë zërat, sasitë dhe standardet."
+    : `Në njoftimin e disponueshëm nuk jepen zërat, sasitë ose specifikimet e plota për këtë fazë; ato duhen konfirmuar në dokumentet teknike. Burimi: ${pages.length === 1 ? `faqja ${pages[0]}` : `faqet ${pages.join(", ")}`}.`;
+  return `${detail[phase] ?? `Kjo fazë lidhet me ${listedTasks}.`} Lidhet me objektin “${subject}”. ${source}`;
 }
 
 function DeliveryPlanSection({
