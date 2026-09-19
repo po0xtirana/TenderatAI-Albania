@@ -23,16 +23,23 @@ const statePath = path.join(root, "data", "state.json");
 if (!fs.existsSync(statePath)) throw new Error("data/state.json nuk u gjet.");
 const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as LocalPersistedState;
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// Supabase now commonly exposes the server-only key as SUPABASE_SECRET_KEY.
+// Keep the legacy service-role name as a fallback so the importer works with
+// both the current company deployment and older handoff packages.
+const serviceKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const userId = process.env.SUPABASE_IMPORT_USER_ID;
-if (!dryRun && (!url || !serviceKey || !userId)) throw new Error("Për --execute duhen NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY dhe SUPABASE_IMPORT_USER_ID.");
+if (!dryRun && (!url || !serviceKey || !userId)) throw new Error("Për --execute duhen NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY (ose SUPABASE_SERVICE_ROLE_KEY) dhe SUPABASE_IMPORT_USER_ID.");
 
 const bulletin = state.bulletins[0];
 const pdfPath = bulletin ? path.join(root, "data", "uploads", `${bulletin.id}.pdf`) : "";
 const pdf = bulletin && fs.existsSync(pdfPath) ? fs.readFileSync(pdfPath) : null;
 if (bulletin && (!pdf || createHash("sha256").update(pdf).digest("hex") !== bulletin.fileHash)) throw new Error("PDF-ja lokale nuk përputhet me hash-in e buletinit.");
 
-console.log(`${dryRun ? "DRY RUN" : "IMPORT"}: ${state.bulletins.length} bulletin(e), ${state.tenders.length} tendera, ${pdf?.byteLength ?? 0} bytes PDF.`);
+const pdfBytes = state.bulletins.reduce((total, item) => {
+  const file = path.join(root, "data", "uploads", `${item.id}.pdf`);
+  return total + (fs.existsSync(file) ? fs.statSync(file).size : 0);
+}, 0);
+console.log(`${dryRun ? "DRY RUN" : "IMPORT"}: ${state.bulletins.length} bulletin(e), ${state.tenders.length} tendera, ${pdfBytes} bytes PDF.`);
 if (dryRun) { console.log("Asnjë ndryshim nuk u bë në Supabase. Përdorni --execute vetëm pas verifikimit."); process.exit(0); }
 
 const client = createClient(url!, serviceKey!, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -126,7 +133,7 @@ if (capabilityVersions.length) {
   await client.from("company_capability_versions").insert(capabilityVersions.map((version) => ({ owner_user_id: owner, version: version.version, readiness_score: version.readinessScore, snapshot: version.snapshot, activated_at: version.activatedAt })));
 }
 await upsert("workspace_state_snapshots", { owner_user_id: owner, schema_version: 1, state, updated_at: new Date().toISOString() }, "owner_user_id");
-console.log(JSON.stringify({ imported: { bulletins: state.bulletins.length, tenders: state.tenders.length, pdfBytes: pdf?.byteLength ?? 0 }, owner }, null, 2));
+console.log(JSON.stringify({ imported: { bulletins: state.bulletins.length, tenders: state.tenders.length, pdfBytes }, owner }, null, 2));
 }
 
 void runImport().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
