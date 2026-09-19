@@ -156,7 +156,9 @@ function hasText(value: unknown): boolean { return typeof value === "string" && 
  */
 function hasIncompleteCapabilityRecord(model: CompanyCapabilityModel): boolean {
   const incomplete = (items: unknown[], meaningful: (item: any) => boolean, complete: (item: any) => boolean) => items.some((item) => meaningful(item) && !complete(item));
-  return incomplete(model.workCapabilities, (item) => hasText(item.trade) || item.cpvPrefixes.length > 0 || item.projectTypes.length > 0 || item.buildingTypes.length > 0, (item) => hasText(item.trade))
+  const identityStarted = [model.identity.legalName, model.identity.nipt, model.identity.registeredAddress, model.identity.email].some(hasText);
+  return (identityStarted && ![model.identity.legalName, model.identity.nipt, model.identity.registeredAddress, model.identity.email].every(hasText))
+    || incomplete(model.workCapabilities, (item) => hasText(item.trade) || item.cpvPrefixes.length > 0 || item.projectTypes.length > 0 || item.buildingTypes.length > 0, (item) => hasText(item.trade))
     || incomplete(model.serviceAreas, (item) => hasText(item.region) || item.municipalities.length > 0, (item) => hasText(item.region))
     || incomplete(model.keyPeople, (item) => hasText(item.fullName) || hasText(item.role), (item) => hasText(item.fullName) && hasText(item.role))
     || incomplete(model.labourPools, (item) => hasText(item.role) || item.headcount > 0 || item.availableHeadcount > 0 || item.skills.length > 0, (item) => hasText(item.role) && item.headcount > 0)
