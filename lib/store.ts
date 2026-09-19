@@ -143,9 +143,10 @@ function findTenderByReference(store: RuntimeStore, tender: TenderNotice): Tende
 
 function activeCapability(store: RuntimeStore): CompanyCapabilityModel {
   const version = [...store.capabilityVersions].sort((a, b) => b.version - a.version)[0];
-  // Draft setup data is saved for the user, but it must not influence live
-  // rankings until the first complete profile has been activated.
-  if (!version) return emptyCapabilityModel(store.company);
+  // A first-time draft can still produce a clearly labelled preliminary fit,
+  // which helps the company see what information is missing. The scorer keeps
+  // that result in review status until a complete immutable version is active.
+  if (!version) return store.capability;
   // A draft can be saved while a colleague is still editing it. Rankings must
   // remain tied to the immutable active snapshot until a valid update is
   // published, otherwise an old plan appears current against new data.

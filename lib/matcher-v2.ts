@@ -342,7 +342,11 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
   const mandatory = requirementMatches.filter((item) => mandatoryContext(tender, item.tenderRequirement));
   let eligibility: TenderEligibility = eligibilityBlocked ? "not_eligible" : mandatory.length && mandatory.every((item) => item.result === "confirmed") ? "eligible" : "eligibility_pending";
   const eligibilityReason = eligibility === "eligible" ? "Kërkesat detyruese të identifikuara në burim mbulohen nga profili aktiv." : eligibility === "not_eligible" ? "Të paktën një bllokues ose kërkesë detyruese e konfirmuar nuk mbulohet." : "Buletini nuk përmban kriteret e plota; kualifikimi mbetet për verifikim pa ulur artificialisht përshtatjen.";
-  const criticalUnknowns = criteria.filter((item) => item.applicability === "unknown" && item.weight >= 10).map((item) => item.explanation);
+  const draftProfile = model.status !== "active" || model.activeVersion <= 0;
+  const criticalUnknowns = [
+    ...criteria.filter((item) => item.applicability === "unknown" && item.weight >= 10).map((item) => item.explanation),
+    ...(draftProfile ? ["Profili i kompanisë është ende draft; rezultati është paraprak derisa profili të aktivizohet."] : []),
+  ];
 
   let decision: TenderDecision; let recommendation: TenderMatch["recommendation"]; let recommendationReason: string;
   if (hardBlocked) { decision = "blocked"; recommendation = "blocked"; recommendationReason = "Ekziston të paktën një bllokues i konfirmuar."; }
@@ -352,6 +356,11 @@ export function matchTenderV2(tender: TenderNotice, profile: CompanyCapabilityPr
   else if (score >= 50) { decision = "review"; recommendation = "review"; recommendationReason = "Ka elemente të përshtatshme dhe boshllëqe që duhen kontrolluar para vendimit."; }
   else if (fitRangeHigh < 65 && confidenceScore >= 35) { decision = "low_fit"; recommendation = "low"; recommendationReason = "Edhe skenari pozitiv nuk e çon tenderin në një përputhje të fortë."; }
   else { decision = "review"; recommendation = "promising_verify"; recommendationReason = "Informacioni është tepër i kufizuar për ta refuzuar me siguri."; }
+  if (!hardBlocked && draftProfile && decision !== "low_fit") {
+    decision = "review";
+    recommendation = "promising_verify";
+    recommendationReason = "Përshtatja është paraprake sepse profili i kompanisë nuk është aktivizuar ende.";
+  }
 
   const strongest = [...criteria].filter((item) => item.score != null).sort((a, b) => (b.contribution * b.evidenceQuality) - (a.contribution * a.evidenceQuality)).slice(0, 3);
   const reasons = strongest.map((item) => item.explanation);

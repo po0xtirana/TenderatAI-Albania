@@ -246,7 +246,7 @@ export default function TenderDetailPage() {
               </span>
               <span className="tag">{tender.referenceNumber}</span>
               <span className="tag">
-                Profili v{match.capabilityVersion || "—"}
+                {match.capabilityVersion > 0 ? `Profili v${match.capabilityVersion}` : "Profil draft · rezultat paraprak"}
               </span>
               <span className="tag">
                 {match.scoringModelVersion === "albania-assessment-v3" ? "Vlerësim i unifikuar V3" : "Model historik"}
