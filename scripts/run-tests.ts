@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 process.env.TENDERAT_AI_TEST_MODE = "1";
-import { activateCapabilities, getCapabilities, getSnapshot, getTender, getTenderDeliveryPlan, recordFeedback, removeBulletin, updateCapabilitySection, updateTenderAction, updateTenderDecision, updateTenderWorkflow, updateTenderDeliveryAllocation } from "../lib/store";
+import { activateCapabilities, exportPersistedState, getCapabilities, getSnapshot, getTender, getTenderDeliveryPlan, importPersistedState, recordFeedback, removeBulletin, updateCapabilitySection, updateTenderAction, updateTenderDecision, updateTenderWorkflow, updateTenderDeliveryAllocation } from "../lib/store";
 import { matchTender } from "../lib/matcher";
 import { normalize } from "../lib/normalize";
 import { calculateReadiness, emptyCapabilityModel } from "../lib/capabilities";
@@ -289,6 +289,20 @@ assert.equal(electricalPartnerMatch.confirmedCapabilities.some((item) => item.to
 const calibratedUp = matchTender(sparseTender, snapshot.company, capabilityBefore.model, { adjustment: 5, evidenceCount: 5, version: "feedback-beta-v1" });
 assert.equal(calibratedUp.score, sparseMatch.score, "relevance feedback must not alter technical suitability");
 assert.equal(calibratedUp.calibrationVersion, "feedback-beta-v1");
+
+const compactedState = exportPersistedState();
+const editedRecord = compactedState.tenders.find((item) => item.tender.id === snapshot.tenders[0].tender.id);
+const uneditedRecord = compactedState.tenders.find((item) => item.tender.id === snapshot.tenders[1].tender.id);
+assert.ok(editedRecord?.deliveryPlan, "user-confirmed delivery allocations must be preserved in persisted state");
+assert.ok(editedRecord?.decisionBrief, "user-recorded decisions and actions must be preserved in persisted state");
+assert.equal(uneditedRecord?.deliveryPlan, undefined, "unmodified delivery plans must be omitted from persisted state to avoid statement timeouts");
+assert.equal(uneditedRecord?.decisionBrief, undefined, "unmodified decision briefs must be omitted from persisted state to avoid statement timeouts");
+assert.equal(uneditedRecord?.match.criterionResults, undefined, "detailed criterion results must be omitted from persisted list state and hydrated on demand");
+importPersistedState(compactedState);
+const hydratedRecord = getTender(snapshot.tenders[1].tender.id);
+assert.ok(hydratedRecord?.deliveryPlan, "compacted tenders must hydrate their delivery plan on demand");
+assert.ok(hydratedRecord?.decisionBrief, "compacted tenders must hydrate their decision brief on demand");
+assert.equal((hydratedRecord?.match.criterionResults?.length ?? 0) > 0, true, "compacted tenders must hydrate detailed criterion results on demand");
 
 const removedBulletin = removeBulletin(snapshot.bulletins[0].id);
 assert.equal(removedBulletin?.id, snapshot.bulletins[0].id, "bulletin deletion must return the removed bulletin");

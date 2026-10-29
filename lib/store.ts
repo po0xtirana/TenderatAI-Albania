@@ -90,7 +90,7 @@ function rematchStore(store: RuntimeStore, options: { regenerateDelivery?: boole
     record.match = nextMatch;
     record.deliveryPlan = assessment.deliveryPlan;
     record.insights = refreshedInsights(record);
-    record.decisionBrief = generateDecisionBrief(record, record.decisionBrief);
+    if (record.decisionBrief) record.decisionBrief = generateDecisionBrief(record, record.decisionBrief);
   }
 }
 
@@ -194,6 +194,37 @@ function shouldAutoPublish(model: CompanyCapabilityModel): boolean {
   return !hasIncompleteCapabilityRecord(model) && (model.status === "active" || calculateReadiness(model).readyForMatching);
 }
 
+function hasUserEditedDeliveryPlan(plan: TenderRecord["deliveryPlan"]): boolean {
+  return Boolean(plan?.allocations.some((item) => item.status !== "suggested"));
+}
+
+function hasUserEditedDecisionBrief(brief: TenderRecord["decisionBrief"]): boolean {
+  return Boolean(
+    brief && (
+      brief.decision != null
+      || brief.actions.some((item) => item.status !== "todo" || item.completionNote !== "" || item.dueDate != null)
+      || brief.issues.some((item) => item.status !== "open")
+    )
+  );
+}
+
+function compactTenderForPersistence(record: TenderRecord): TenderRecord {
+  const { criterionResults: _criterionResults, ...compactMatch } = record.match;
+  const aiInsights = (record.insights ?? []).filter((item) => item.id.includes("-ai-"));
+  const compacted: TenderRecord = {
+    tender: record.tender,
+    bulletin: record.bulletin,
+    match: compactMatch,
+    insights: aiInsights,
+    workflowStatus: record.workflowStatus,
+    relevanceFeedback: record.relevanceFeedback ?? null,
+  };
+  if (hasUserEditedDeliveryPlan(record.deliveryPlan)) compacted.deliveryPlan = record.deliveryPlan;
+  if (hasUserEditedDecisionBrief(record.decisionBrief)) compacted.decisionBrief = record.decisionBrief;
+  if (record.assessmentHistory?.length) compacted.assessmentHistory = record.assessmentHistory;
+  return compacted;
+}
+
 function persist(store: RuntimeStore): void {
   if (process.env.TENDERAT_AI_TEST_MODE === "1" || process.env.DATA_BACKEND === "supabase") return;
   try {
@@ -201,7 +232,7 @@ function persist(store: RuntimeStore): void {
     const documentDirectory = path.join(dataDirectory, "capability-documents");
     fs.mkdirSync(uploadDirectory, { recursive: true });
     fs.mkdirSync(documentDirectory, { recursive: true });
-    const state: PersistedState = { company: store.company, capability: store.capability, capabilityVersions: store.capabilityVersions, bulletins: store.bulletins, tenders: [...store.tenders.values()] };
+    const state: PersistedState = { company: store.company, capability: store.capability, capabilityVersions: store.capabilityVersions, bulletins: store.bulletins, tenders: [...store.tenders.values()].map(compactTenderForPersistence) };
     fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), "utf8");
     for (const [id, buffer] of store.files) fs.writeFileSync(path.join(uploadDirectory, `${id}.pdf`), buffer);
     for (const [id, buffer] of store.capabilityFiles) fs.writeFileSync(path.join(documentDirectory, id), buffer);
@@ -224,10 +255,28 @@ function restoreFromSaved(saved: PersistedState, restoredFiles = new Map<string,
     const active = activeCapability(base);
     for (const savedRecord of saved.tenders ?? []) {
       const bulletin = base.bulletins.find((item) => item.id === savedRecord.tender.bulletinId) ?? savedRecord.bulletin;
-      const assessment = assessTender({ tender: savedRecord.tender, profile: company, model: active, existingPlan: savedRecord.deliveryPlan });
-      const match = applyRelevanceFeedback(assessment.match, savedRecord.relevanceFeedback);
-      const deliveryPlan = assessment.deliveryPlan;
-      base.tenders.set(savedRecord.tender.id, { ...savedRecord, bulletin, match, insights: refreshedInsights({ tender: savedRecord.tender, match, insights: savedRecord.insights ?? [] }), workflowStatus: savedRecord.workflowStatus ?? "new", deliveryPlan, relevanceFeedback: savedRecord.relevanceFeedback ?? null });
+      const matchIsCurrent = Boolean(
+        savedRecord.match
+        && savedRecord.match.scoringModelVersion === "albania-assessment-v3"
+        && savedRecord.match.capabilityVersion === active.activeVersion
+        && (!savedRecord.deliveryPlan || savedRecord.deliveryPlan.capabilityVersion === active.activeVersion)
+      );
+      if (matchIsCurrent) {
+        const match = applyRelevanceFeedback(savedRecord.match, savedRecord.relevanceFeedback);
+        base.tenders.set(savedRecord.tender.id, {
+          ...savedRecord,
+          bulletin,
+          match,
+          insights: savedRecord.insights ?? [],
+          workflowStatus: savedRecord.workflowStatus ?? "new",
+          relevanceFeedback: savedRecord.relevanceFeedback ?? null,
+        });
+      } else {
+        const assessment = assessTender({ tender: savedRecord.tender, profile: company, model: active, existingPlan: savedRecord.deliveryPlan });
+        const match = applyRelevanceFeedback(assessment.match, savedRecord.relevanceFeedback);
+        const deliveryPlan = assessment.deliveryPlan;
+        base.tenders.set(savedRecord.tender.id, { ...savedRecord, bulletin, match, insights: refreshedInsights({ tender: savedRecord.tender, match, insights: savedRecord.insights ?? [] }), workflowStatus: savedRecord.workflowStatus ?? "new", deliveryPlan, relevanceFeedback: savedRecord.relevanceFeedback ?? null });
+      }
     }
     dedupeTenderRecords(base);
     return base;
@@ -259,7 +308,13 @@ function restore(): RuntimeStore | null {
 
 export function exportPersistedState(): LocalPersistedState {
   const store = runtime();
-  return structuredClone({ company: store.company, capability: store.capability, capabilityVersions: store.capabilityVersions, bulletins: store.bulletins, tenders: [...store.tenders.values()] });
+  return structuredClone({
+    company: store.company,
+    capability: store.capability,
+    capabilityVersions: store.capabilityVersions,
+    bulletins: store.bulletins,
+    tenders: [...store.tenders.values()].map(compactTenderForPersistence),
+  });
 }
 
 export function importPersistedState(saved: LocalPersistedState, files: Map<string, Buffer> = new Map(), capabilityFiles: Map<string, Buffer> = new Map()): void {
@@ -401,7 +456,7 @@ export function getTender(id: string): TenderRecord | null {
   const store = runtime(); const record = store.tenders.get(id); if (!record) return null;
   let changed = false;
   const active = activeCapability(store);
-  const planOutdated = !record.deliveryPlan || record.deliveryPlan.capabilityVersion !== active.activeVersion || record.deliveryPlan.capabilityUpdatedAt !== active.draftUpdatedAt;
+  const planOutdated = !record.deliveryPlan || !record.match.criterionResults?.length || record.deliveryPlan.capabilityVersion !== active.activeVersion || record.deliveryPlan.capabilityUpdatedAt !== active.draftUpdatedAt;
   if (planOutdated) {
     const assessment = assessTender({ tender: record.tender, profile: store.company, model: active, existingPlan: record.deliveryPlan });
     record.deliveryPlan = assessment.deliveryPlan;
@@ -453,6 +508,7 @@ export function updateTenderDecision(tenderId: string, status: TenderDecisionSta
   persist(store); return record;
 }
 export function getBulletinFile(id: string): Buffer | null { return runtime().files.get(id) ?? null; }
+export function setBulletinFile(id: string, buffer: Buffer): void { runtime().files.set(id, buffer); }
 export function getCapabilityDocument(id: string): { metadata: CapabilityDocument; buffer: Buffer } | null {
   const store = runtime(); const metadata = store.capability.documents.find((item) => item.id === id); const buffer = store.capabilityFiles.get(id);
   return metadata && buffer ? { metadata, buffer } : null;
@@ -511,8 +567,8 @@ export function updateCompany(next: Partial<CompanyCapabilityProfile>): CompanyC
 export function recordFeedback(tenderId: string, relevant: boolean): TenderRecord | null {
   const store = runtime(); const record = store.tenders.get(tenderId); if (!record) return null;
   record.relevanceFeedback = relevant;
-  rematchStore(store);
-  persist(store); return store.tenders.get(tenderId) ?? null;
+  record.match = applyRelevanceFeedback(record.match, relevant);
+  persist(store); return record;
 }
 export function updateTenderWorkflow(tenderId: string, status: TenderWorkflowStatus): TenderRecord | null {
   const record = getTender(tenderId); if (!record) return null; record.workflowStatus = status; persist(runtime()); return record;
@@ -582,21 +638,21 @@ export async function processBulletin(id: string, options: ProcessBulletinOption
     for (const tender of parsed.notices) {
       const existing = findTenderByReference(store, tender) ?? previousByReference.get(referenceKey(tender.referenceNumber)) ?? null;
       const feedback = existing?.relevanceFeedback ?? null;
-      const assessment = assessTender({ tender, profile: store.company, model: active });
+      const assessment = assessTender({ tender, profile: store.company, model: active, existingPlan: existing?.deliveryPlan });
       const match = applyRelevanceFeedback(assessment.match, feedback);
       const previousStatus = existing?.workflowStatus ?? "new";
-      const record: TenderRecord = { tender, bulletin, match, insights: createDeterministicInsights(tender, match), workflowStatus: previousStatus, deliveryPlan: assessment.deliveryPlan, relevanceFeedback: feedback };
+      const record: TenderRecord = { tender, bulletin, match, insights: createDeterministicInsights(tender, match), workflowStatus: previousStatus, deliveryPlan: assessment.deliveryPlan, decisionBrief: existing?.decisionBrief, relevanceFeedback: feedback };
       if (existing && existing.tender.id !== tender.id) store.tenders.delete(existing.tender.id);
       records.push(record); store.tenders.set(tender.id, record);
     }
     dedupeTenderRecords(store);
-    rematchStore(store);
     bulletin.status = parsed.notices.length ? "completed" : "needs_review";
     bulletin.processingStage = parsed.notices.length ? "completed" : "needs_review";
     // Persist the deterministic extraction before optional AI enrichment. A slow or
     // unavailable provider must never make a successfully parsed bulletin disappear.
     persist(store);
-    await options.afterDeterministic?.();
+    try { await options.afterDeterministic?.(); }
+    catch (persistError) { console.warn("[bulletin-processing] intermediate checkpoint save deferred", { bulletinId: id, error: persistError instanceof Error ? persistError.message : String(persistError) }); }
     try { await addOptionalAiInsights(records, options.aiLimit); }
     catch (error) { console.warn("[bulletin-processing] optional AI pass failed", { bulletinId: id, error: error instanceof Error ? error.message : String(error) }); }
     persist(store);

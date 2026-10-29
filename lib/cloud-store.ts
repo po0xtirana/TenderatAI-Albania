@@ -4,7 +4,7 @@ import {
   activateCapabilities, addCapabilityDocument, exportPersistedState, getCapabilities,
   getCapabilityVersions, getSnapshot, getTender, getTenderDeliveryPlan, importPersistedState,
   processBulletin, queueBulletin, recordFeedback, removeCapabilityDocument, updateCapabilitySection, enrichTenderInsights,
-  removeBulletin, updateCompany, updateTenderAction, updateTenderDecision, updateTenderDeliveryAllocation, updateTenderWorkflow
+  removeBulletin, setBulletinFile, updateCompany, updateTenderAction, updateTenderDecision, updateTenderDeliveryAllocation, updateTenderWorkflow
 } from "./store";
 import type { LocalPersistedState } from "./store";
 import type { AppSnapshot, Bulletin, CapabilityDocument, CapabilityReadiness, CapabilitySectionKey, CapabilityVersion, CompanyCapabilityModel, CompanyCapabilityProfile, TenderActionStatus, TenderDecisionStatus, TenderRecord, TenderWorkflowStatus } from "./types";
@@ -13,6 +13,7 @@ type CloudStateRow = { state: LocalPersistedState; revision?: number; updated_at
 const loadedRevision = new WeakMap<object, number | null>();
 const loadedUpdatedAt = new WeakMap<object, string | null>();
 const revisionGuardAvailable = new WeakMap<object, boolean>();
+let revisionColumnSupported: boolean | null = null;
 
 export class WorkspaceConflictError extends Error {
   constructor() { super("Të dhënat u ndryshuan nga një proces tjetër. Rifreskoni faqen dhe provoni përsëri."); this.name = "WorkspaceConflictError"; }
@@ -32,11 +33,21 @@ async function clientAndUser() {
 
 async function loadState(): Promise<{ client: NonNullable<Awaited<ReturnType<typeof getSupabaseServerClient>>>; userId: string }> {
   const { client, user } = await clientAndUser();
-  let result = await client.from("workspace_state_snapshots").select("state, revision").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string; code?: string } | null };
-  if (result.error && /revision|column/i.test(result.error.message)) {
+  let result: { data: CloudStateRow | null; error: { message: string; code?: string } | null };
+  if (revisionColumnSupported === false) {
     result = await client.from("workspace_state_snapshots").select("state, updated_at").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string; code?: string } | null };
     revisionGuardAvailable.set(client, false);
-  } else revisionGuardAvailable.set(client, true);
+  } else {
+    result = await client.from("workspace_state_snapshots").select("state, revision").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string; code?: string } | null };
+    if (result.error && /revision|column/i.test(result.error.message)) {
+      revisionColumnSupported = false;
+      result = await client.from("workspace_state_snapshots").select("state, updated_at").eq("owner_user_id", user.id).maybeSingle() as { data: CloudStateRow | null; error: { message: string; code?: string } | null };
+      revisionGuardAvailable.set(client, false);
+    } else {
+      revisionColumnSupported = true;
+      revisionGuardAvailable.set(client, true);
+    }
+  }
   const { data, error } = result;
   if (error) throw new Error(error.message);
   if (data?.state) importPersistedState(data.state);
@@ -81,7 +92,7 @@ export async function cloudTender(id: string): Promise<TenderRecord | null> {
   const { client, userId } = await loadState();
   const before = getSnapshot({ period: "all" }).tenders.find((item) => item.tender.id === id)?.deliveryPlan;
   const value = getTender(id);
-  if (value?.deliveryPlan && (before?.plannerVersion !== value.deliveryPlan.plannerVersion || before?.capabilityUpdatedAt !== value.deliveryPlan.capabilityUpdatedAt)) await saveState(client, userId);
+  if (before && value?.deliveryPlan && (before.plannerVersion !== value.deliveryPlan.plannerVersion || before.capabilityUpdatedAt !== value.deliveryPlan.capabilityUpdatedAt)) await saveState(client, userId);
   return value;
 }
 export async function cloudCapabilities(): Promise<{ model: CompanyCapabilityModel; readiness: CapabilityReadiness }> { await loadState(); return getCapabilities(); }
@@ -235,11 +246,18 @@ export async function cloudProcessBulletin(id: string): Promise<void> {
   const { client, userId } = await loadState();
   const { data, error } = await client.storage.from("app-bulletins").download(bulletinPath(userId, id));
   if (error || !data) throw new Error(error?.message ?? "PDF-ja nuk u gjet në cloud.");
-  importPersistedState(exportPersistedState(), new Map([[id, Buffer.from(await data.arrayBuffer())]]));
+  setBulletinFile(id, Buffer.from(await data.arrayBuffer()));
+  let savedDeterministic = false;
+  let aiInsightCountAtSave = 0;
+  const countBulletinAiInsights = () => getSnapshot({ period: "all" }).tenders
+    .filter((item) => item.tender.bulletinId === id)
+    .reduce((sum, item) => sum + item.insights.filter((insight) => insight.id.includes("-ai-")).length, 0);
   const persistExtractedResults = async () => {
     const extracted = getSnapshot().bulletins.find((item) => item.id === id);
     await saveState(client, userId);
     if (extracted) await upsertCloudBulletin(client, userId, extracted);
+    savedDeterministic = true;
+    aiInsightCountAtSave = countBulletinAiInsights();
   };
   await processBulletin(id, {
     // Keep the synchronous Vercel request short. AI enrichment is useful, but the
@@ -248,9 +266,14 @@ export async function cloudProcessBulletin(id: string): Promise<void> {
     afterDeterministic: persistExtractedResults
   });
   const refreshed = getSnapshot().bulletins.find((item) => item.id === id);
-  await saveState(client, userId);
+  if (!savedDeterministic || refreshed?.status === "failed" || countBulletinAiInsights() !== aiInsightCountAtSave) {
+    await saveState(client, userId);
+  }
   if (refreshed) {
     const { error: updateError } = await client.from("bulletins").update({
+      bulletin_number: refreshed.bulletinNumber,
+      bulletin_type: refreshed.bulletinType,
+      publication_date: refreshed.publicationDate,
       status: refreshed.status,
       processing_stage: refreshed.processingStage,
       page_count: refreshed.pageCount,
@@ -311,7 +334,7 @@ export async function cloudProcessQueuedBulletin(id: string): Promise<boolean> {
   if (!claimed) return false;
   try {
     await cloudProcessBulletin(id);
-    const refreshed = (await cloudSnapshot()).bulletins.find((item) => item.id === id);
+    const refreshed = getSnapshot().bulletins.find((item) => item.id === id);
     const failed = refreshed?.status === "failed";
     const attempts = Number(claimed.attempt_count ?? 1);
     const finalStatus = failed ? (attempts >= 3 ? "failed" : "retryable") : "succeeded";
